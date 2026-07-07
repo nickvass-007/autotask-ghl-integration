@@ -132,6 +132,38 @@ async def ghl_contact_webhook(request: Request) -> JSONResponse:
     event_id = str(payload.get("eventId") or payload.get("id") or new_correlation_id())
     data = payload.get("contact", payload)
 
+    # ── Echo suppression ──────────────────────────────────────────────────
+    # Our own AT→GHL pushes make GHL fire Contact webhooks straight back. If
+    # this contact is mapped and WE synced it moments ago, drop the event
+    # cheaply BEFORE any Autotask calls — an echo storm during a backfill
+    # otherwise floods the approval queue and exhausts the connection pool.
+    ghl_contact_id = str(data.get("id") or "")
+    if ghl_contact_id:
+        from datetime import timedelta
+
+        from sqlalchemy import select
+
+        from ..db.base import utcnow
+        from ..db.enums import CanonicalEntityType
+        from ..db.models import EntityMapping
+
+        with session_scope() as session:
+            link = session.execute(
+                select(EntityMapping).where(
+                    EntityMapping.environment == get_settings().environment,
+                    EntityMapping.canonical_entity_type == CanonicalEntityType.CONTACT,
+                    EntityMapping.ghl_id == ghl_contact_id,
+                )
+            ).scalar_one_or_none()
+            if (
+                link is not None
+                and link.last_synced_at is not None
+                and utcnow() - link.last_synced_at < timedelta(minutes=15)
+            ):
+                return JSONResponse(
+                    {"action": "skipped_echo", "detail": "recently synced by this integration"}
+                )
+
     incoming = CanonicalContact(
         source_system=System.GHL,
         source_id=str(data.get("id")) if data.get("id") else None,

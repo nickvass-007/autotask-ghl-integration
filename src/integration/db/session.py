@@ -21,7 +21,17 @@ from ..config.settings import get_settings
 def get_engine() -> Engine:
     settings = get_settings()
     # pool_pre_ping avoids stale connections after idle periods (matters on Azure SQL).
-    return create_engine(settings.database_url, pool_pre_ping=True, future=True)
+    # Generous pool: webhook handlers hold a session across slow connector calls,
+    # so bursts (e.g. GHL retry storms) need headroom; fail fast rather than
+    # wedging the event loop for 30s when it's truly exhausted.
+    return create_engine(
+        settings.database_url,
+        pool_pre_ping=True,
+        pool_size=15,
+        max_overflow=25,
+        pool_timeout=10,
+        future=True,
+    )
 
 
 @lru_cache
