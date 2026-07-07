@@ -257,15 +257,56 @@ class GHLConnector(Connector):
         return self._to_canonical(item) if item else None
 
     async def create_contact(self, contact: CanonicalContact) -> PushResult:
-        resp = await request_json(
-            self._client,  # type: ignore[arg-type]
-            "POST",
-            f"{GHL_API_BASE}/contacts/",
-            headers=self._headers(),
-            json=self._payload(contact),
-        )
-        new_id = str(resp.json().get("contact", {}).get("id"))
-        return PushResult(ok=True, external_id=new_id, detail="created")
+        """Create a GHL contact, resolving the location's duplicate policy.
+
+        Locations with "no duplicated contacts" reject creates that match an
+        existing contact and name the ``matchingField`` in the error body:
+
+        - match on **phone**: usually colleagues sharing an office line — we
+          retry WITHOUT the phone so each person stays a distinct contact.
+        - match on **email** (or anything else identifying): a genuine dupe —
+          adopt the existing GHL contact id so the mapping links instead of
+          duplicating.
+        """
+        payload = self._payload(contact)
+        for _ in range(3):
+            try:
+                resp = await request_json(
+                    self._client,  # type: ignore[arg-type]
+                    "POST",
+                    f"{GHL_API_BASE}/contacts/",
+                    headers=self._headers(),
+                    json=payload,
+                )
+                new_id = str(resp.json().get("contact", {}).get("id"))
+                return PushResult(ok=True, external_id=new_id, detail="created")
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code != 400:
+                    raise
+                try:
+                    data = exc.response.json()
+                except ValueError:
+                    raise exc from None
+                if "duplicated contacts" not in str(data.get("message", "")):
+                    raise
+                meta = data.get("meta") or {}
+                matching = meta.get("matchingField")
+                existing_id = meta.get("contactId")
+                if matching == "phone" and payload.get("phone"):
+                    log.info(
+                        "GHL duplicate-phone on create (shared line with %s) — retrying without phone",
+                        existing_id,
+                    )
+                    payload.pop("phone")
+                    continue
+                if existing_id:
+                    return PushResult(
+                        ok=True,
+                        external_id=str(existing_id),
+                        detail=f"deduped_existing:{matching}",
+                    )
+                raise
+        return PushResult(ok=False, detail="duplicate resolution failed after retries")
 
     async def update_contact(self, external_id: str, changes: dict[str, object]) -> PushResult:
         # changes keyed by GHL field name (engine resolves direction); strip Nones.
