@@ -18,9 +18,26 @@ from sqlalchemy.orm import Session
 
 from ..config.settings import get_settings
 from ..core.logging import get_logger
-from ..db.models import SyncCriteria
+from ..db.models import SyncCriteria, SyncExclusion
 
 log = get_logger(__name__)
+
+
+def is_excluded(session: Session, entity_type: str, autotask_id: str | None) -> bool:
+    """Per-record portal exclusion — overrides criteria for the outbound mirror."""
+    if not autotask_id:
+        return False
+    env = get_settings().environment
+    return (
+        session.execute(
+            select(SyncExclusion).where(
+                SyncExclusion.environment == env,
+                SyncExclusion.entity_type == entity_type,
+                SyncExclusion.autotask_id == str(autotask_id),
+            )
+        ).scalar_one_or_none()
+        is not None
+    )
 
 OPERATORS = ("eq", "ne", "in", "not_in")
 
@@ -76,6 +93,7 @@ class AccountFilter:
     """Per-sweep evaluator with an account cache so each Account is fetched once."""
 
     def __init__(self, session: Session, autotask) -> None:
+        self._session = session
         self._rules = load_rules(session)
         self._autotask = autotask
         self._cache: dict[str, bool] = {}
@@ -95,8 +113,12 @@ class AccountFilter:
         return self._cache[account_id]
 
     async def allows_contact(self, at_contact) -> bool:
-        if not self._rules:
-            return True
         if at_contact is None:
             return False
+        if is_excluded(self._session, "contact", at_contact.source_id) or is_excluded(
+            self._session, "account", at_contact.company_id
+        ):
+            return False
+        if not self._rules:
+            return True
         return await self.allows_account(at_contact.company_id)

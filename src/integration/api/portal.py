@@ -534,27 +534,49 @@ async def contacts(
     _authorize(request, x_admin_token)
     limit = limit if limit in (50, 100, 200) else 100
     offset = max(0, offset)
+
+    # Search: resolve q → Autotask contact ids (name/email contains), then
+    # restrict the mapping page to those ids.
+    search_ids: list[str] | None = None
+    if q.strip():
+        try:
+            autotask_s = await get_autotask()
+            resp = await autotask_s._client.post(
+                autotask_s._url("Contacts/query"),
+                headers=autotask_s._auth_headers(),
+                json={
+                    "filter": [{
+                        "op": "or",
+                        "items": [
+                            {"op": "contains", "field": f, "value": q.strip()}
+                            for f in ("firstName", "lastName", "emailAddress")
+                        ],
+                    }],
+                    "IncludeFields": ["id"],
+                    "MaxRecords": 500,
+                },
+            )
+            resp.raise_for_status()
+            search_ids = [str(i["id"]) for i in resp.json().get("items", [])]
+        except Exception as exc:
+            log.warning("Contact search unavailable: %s", exc)
+            search_ids = []
+
     with session_scope() as session:
         settings = get_portal_settings(session)
-        stmt = (
-            select(EntityMapping)
-            .where(
-                EntityMapping.environment == get_settings().environment,
-                EntityMapping.canonical_entity_type == CanonicalEntityType.CONTACT,
-            )
-            .order_by(EntityMapping.last_synced_at.desc())
-            .offset(offset)
-            .limit(limit)
+        base = select(EntityMapping).where(
+            EntityMapping.environment == get_settings().environment,
+            EntityMapping.canonical_entity_type == CanonicalEntityType.CONTACT,
         )
+        if search_ids is not None:
+            base = base.where(EntityMapping.autotask_id.in_(search_ids or ["-none-"]))
+        stmt = base.order_by(EntityMapping.last_synced_at.desc()).offset(offset).limit(limit)
         rows = list(session.execute(stmt).scalars())
-        total = (
-            session.query(EntityMapping)
-            .filter_by(
-                environment=get_settings().environment,
-                canonical_entity_type=CanonicalEntityType.CONTACT,
-            )
-            .count()
-        )
+        from sqlalchemy import func
+
+        total = session.execute(
+            select(func.count()).select_from(base.subquery())
+        ).scalar() or 0
 
     # Enrich the page live from Autotask (IDs only live in the mapping table):
     # one batched contact query + one batched company query per page.
@@ -675,6 +697,185 @@ async def logs(
                 ]
             }
         )
+
+
+# ── Trends, detail views, exclusions, bulk actions ───────────────────────────
+@router.get("/portal/api/trends")
+async def trends(request: Request, x_admin_token: str = Header(default="")) -> JSONResponse:
+    """Daily operation counts for the last 14 days (dashboard chart)."""
+    _authorize(request, x_admin_token)
+    from datetime import timedelta
+
+    env = get_settings().environment
+    since = utcnow() - timedelta(days=14)
+    with session_scope() as session:
+        rows = session.execute(
+            select(TransactionLog.timestamp, TransactionLog.operation, TransactionLog.status)
+            .where(TransactionLog.environment == env, TransactionLog.timestamp >= since)
+        ).all()
+    days: dict[str, dict] = {}
+    for ts, op, status in rows:
+        key = ts.date().isoformat()
+        d = days.setdefault(key, {"created": 0, "updated": 0, "errors": 0, "other": 0})
+        st, opv = _enum_val(status), _enum_val(op)
+        if st == "error":
+            d["errors"] += 1
+        elif opv == "create":
+            d["created"] += 1
+        elif opv == "update":
+            d["updated"] += 1
+        else:
+            d["other"] += 1
+    out = []
+    for i in range(13, -1, -1):
+        day = (utcnow() - timedelta(days=i)).date().isoformat()
+        out.append({"day": day, **days.get(day, {"created": 0, "updated": 0, "errors": 0, "other": 0})})
+    return JSONResponse({"days": out})
+
+
+@router.get("/portal/api/contacts/{autotask_id}/detail")
+async def contact_detail(
+    autotask_id: str, request: Request, x_admin_token: str = Header(default="")
+) -> JSONResponse:
+    _authorize(request, x_admin_token)
+    from ..sync.criteria import is_excluded
+
+    with session_scope() as session:
+        link = session.execute(
+            select(EntityMapping).where(
+                EntityMapping.environment == get_settings().environment,
+                EntityMapping.canonical_entity_type == CanonicalEntityType.CONTACT,
+                EntityMapping.autotask_id == autotask_id,
+            )
+        ).scalar_one_or_none()
+        history = [
+            {
+                "timestamp": _iso(t.timestamp),
+                "direction": _enum_val(t.direction),
+                "operation": _enum_val(t.operation),
+                "status": _enum_val(t.status),
+                "summary": t.summary,
+            }
+            for t in session.execute(
+                select(TransactionLog)
+                .where(TransactionLog.entity_ref.in_([autotask_id, link.ghl_id if link else ""]))
+                .order_by(TransactionLog.timestamp.desc())
+                .limit(50)
+            ).scalars()
+        ]
+        excluded = is_excluded(session, "contact", autotask_id)
+        settings = get_portal_settings(session)
+    detail = None
+    try:
+        autotask = await get_autotask()
+        contact = await autotask.get_contact(autotask_id)
+        raw_account = (
+            await autotask.get_account_raw(contact.company_id)
+            if contact and contact.company_id
+            else None
+        )
+        detail = {
+            "first_name": contact.first_name if contact else None,
+            "last_name": contact.last_name if contact else None,
+            "email": contact.email if contact else None,
+            "phone": contact.phone if contact else None,
+            "company_id": contact.company_id if contact else None,
+            "company_name": (raw_account or {}).get("companyName"),
+        }
+    except Exception as exc:
+        log.warning("Contact detail enrichment unavailable: %s", exc)
+    return JSONResponse(
+        {
+            "autotask_id": autotask_id,
+            "ghl_id": link.ghl_id if link else None,
+            "last_synced_at": _iso(link.last_synced_at) if link else None,
+            "excluded": excluded,
+            "detail": detail,
+            "history": history,
+            "autotask_web_base": settings["autotask_web_base"],
+        }
+    )
+
+
+@router.post("/portal/api/exclusions")
+async def add_exclusion(request: Request, x_admin_token: str = Header(default="")) -> JSONResponse:
+    _authorize(request, x_admin_token)
+    from ..db.models import SyncExclusion
+
+    body = await request.json()
+    entity_type = body.get("entity_type")
+    autotask_id = str(body.get("autotask_id") or "")
+    if entity_type not in ("contact", "account") or not autotask_id:
+        raise HTTPException(status_code=400, detail="entity_type (contact|account) + autotask_id required")
+    with session_scope() as session:
+        session.add(
+            SyncExclusion(
+                environment=get_settings().environment,
+                entity_type=entity_type,
+                autotask_id=autotask_id,
+                reason=body.get("reason", ""),
+                created_by=body.get("operator", "portal"),
+            )
+        )
+    return JSONResponse({"excluded": autotask_id})
+
+
+@router.delete("/portal/api/exclusions/{entity_type}/{autotask_id}")
+async def remove_exclusion(
+    entity_type: str, autotask_id: str, request: Request, x_admin_token: str = Header(default="")
+) -> JSONResponse:
+    _authorize(request, x_admin_token)
+    from ..db.models import SyncExclusion
+
+    with session_scope() as session:
+        row = session.execute(
+            select(SyncExclusion).where(
+                SyncExclusion.environment == get_settings().environment,
+                SyncExclusion.entity_type == entity_type,
+                SyncExclusion.autotask_id == autotask_id,
+            )
+        ).scalar_one_or_none()
+        if row is not None:
+            session.delete(row)
+    return JSONResponse({"removed": autotask_id})
+
+
+@router.post("/portal/api/approvals/bulk-reject-echoes")
+async def bulk_reject_echoes(request: Request, x_admin_token: str = Header(default="")) -> JSONResponse:
+    """Reject pending GHL→AT contact approvals whose GHL contact is one WE
+    synced (mapped) — the echo-storm leftovers. Autotask is untouched."""
+    _authorize(request, x_admin_token)
+    from ..db.enums import System
+
+    env = get_settings().environment
+    rejected = 0
+    with session_scope() as session:
+        pending = list(
+            session.execute(
+                select(ApprovalQueue).where(
+                    ApprovalQueue.environment == env,
+                    ApprovalQueue.status == ApprovalStatus.PENDING,
+                    ApprovalQueue.source_system == System.GHL,
+                    ApprovalQueue.ghl_id.is_not(None),
+                )
+            ).scalars()
+        )
+        mapped = {
+            m.ghl_id
+            for m in session.execute(
+                select(EntityMapping).where(
+                    EntityMapping.environment == env,
+                    EntityMapping.canonical_entity_type == CanonicalEntityType.CONTACT,
+                )
+            ).scalars()
+        }
+        for a in pending:
+            if a.ghl_id in mapped:
+                a.status = ApprovalStatus.REJECTED
+                a.decided_at = utcnow()
+                a.decided_by = "portal:bulk-reject-echoes"
+                rejected += 1
+    return JSONResponse({"rejected": rejected})
 
 
 @router.get("/portal/api/settings")

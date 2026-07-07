@@ -401,6 +401,25 @@ class SyncProfileSnapshot(Base):
     __table_args__ = (Index("ix_sps_profile", "environment", "profile_id", "created_at"),)
 
 
+class SyncExclusion(Base):
+    """Per-record sync disable: an excluded account/contact is never mirrored
+    outbound, regardless of criteria. Managed from the portal detail views."""
+
+    __tablename__ = "sync_exclusions"
+
+    id: Mapped[int] = id_column()
+    environment: Mapped[str] = mapped_column(_enum(Environment, "se_environment"), nullable=False)
+    entity_type: Mapped[str] = mapped_column(String(20), nullable=False)  # account | contact
+    autotask_id: Mapped[str] = mapped_column(String(80), nullable=False)
+    reason: Mapped[str | None] = mapped_column(Text)
+    created_by: Mapped[str | None] = mapped_column(String(120))
+    created_at: Mapped[datetime] = created_at_column()
+
+    __table_args__ = (
+        UniqueConstraint("environment", "entity_type", "autotask_id", name="uq_sync_exclusions"),
+    )
+
+
 class PortalSetting(Base):
     __tablename__ = "portal_settings"
 

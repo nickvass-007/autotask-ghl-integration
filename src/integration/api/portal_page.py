@@ -116,13 +116,32 @@ async function pageDashboard(){const d=await api("/portal/api/overview");const c
   <div class="row" style="margin-top:8px"><span class="muted">Human decisions:</span>
     ${pill("approved")} <b>${ad.approved??0}</b> <span class="muted">·</span>
     ${pill("failed")} <b>${ad.rejected??0}</b> rejected</div></div>
+  <div class="card"><h2>14-day activity</h2><div id="trend" class="muted">loading…</div></div>
   <div class="card"><h2>Recent jobs</h2><div class="scroll"><table>
     <tr><th>#</th><th>Profile</th><th>Kind</th><th>Trigger</th><th>Status</th><th>Started</th><th>Duration</th><th>Result</th></tr>
     ${d.recent_jobs.map(j=>`<tr onclick="location.hash='job/${j.id}'" style="cursor:pointer">
       <td>${j.id}</td><td>${j.profile_id??"—"}</td><td>${pill(j.kind)}</td><td>${pill(j.trigger)}</td>
       <td>${pill(j.status)}</td><td>${fmtDt(j.started_at)}</td><td>${j.duration_s??"—"}s</td>
       <td class="muted">${esc(JSON.stringify(j.summary||{}).slice(0,80))}</td></tr>`).join("")}
-  </table></div></div>`;}
+  </table></div></div>`;
+  renderTrend();}
+
+async function renderTrend(){try{
+  const t=await api("/portal/api/trends");const days=t.days;
+  const max=Math.max(1,...days.map(d=>d.created+d.updated+d.errors+d.other));
+  const W=720,H=120,bw=Math.floor(W/days.length)-6;
+  const bars=days.map((d,i)=>{
+    const total=d.created+d.updated+d.errors+d.other;
+    let y=H-18;const segs=[["created","var(--brand-success)"],["updated","var(--brand-primary)"],["other","#5a6478"],["errors","var(--brand-danger)"]]
+      .map(([k,col])=>{const h=Math.round((d[k]/max)*(H-30));y-=h;
+        return h?`<rect x="${i*(bw+6)}" y="${y}" width="${bw}" height="${h}" fill="${col}" rx="2"><title>${d.day}: ${d[k]} ${k}</title></rect>`:"";}).join("");
+    const lbl=i%2===0?`<text x="${i*(bw+6)+bw/2}" y="${H-4}" font-size="9" fill="var(--brand-muted)" text-anchor="middle">${d.day.slice(5)}</text>`:"";
+    return segs+lbl+(total?`<text x="${i*(bw+6)+bw/2}" y="${y-3}" font-size="9" fill="var(--brand-muted)" text-anchor="middle">${total}</text>`:"");}).join("");
+  $("#trend").innerHTML=`<svg viewBox="0 0 ${W} ${H}" style="width:100%;max-width:${W}px">${bars}</svg>
+  <div class="row muted" style="font-size:12px"><span style="color:var(--brand-success)">■</span> created
+  <span style="color:var(--brand-primary)">■</span> updated <span style="color:#5a6478">■</span> other
+  <span style="color:var(--brand-danger)">■</span> errors</div>`;
+}catch(e){$("#trend").textContent="trend unavailable: "+e.message;}}
 
 async function pageCustomers(){const profiles=(await api("/portal/api/profiles")).profiles;
   const sel=location.hash.split("?p=")[1]||"";
@@ -137,16 +156,20 @@ async function pageCustomers(){const profiles=(await api("/portal/api/profiles")
       <td>${esc(c.classification||"—")}</td><td>${c.linked?pill("linked"):pill("new")}${c.ghl_id?` <span class="muted">GHL ${esc(c.ghl_id)}</span>`:""}</td></tr>`).join("")||"<tr><td colspan=5 class=muted>No rows — run a dry-run on a profile or sync companies.</td></tr>"}
     </table></div></div>`;}
 
-let contactsPage={offset:0,limit:100};
+let contactsPage={offset:0,limit:100,q:""};
 async function pageContacts(){
-  const {offset,limit}=contactsPage;
-  const d=await api(`/portal/api/contacts?offset=${offset}&limit=${limit}`);AT_BASE=d.autotask_web_base;
+  const {offset,limit,q}=contactsPage;
+  const d=await api(`/portal/api/contacts?offset=${offset}&limit=${limit}&q=${encodeURIComponent(q)}`);AT_BASE=d.autotask_web_base;
   const pages=Math.max(1,Math.ceil(d.total/d.limit));
   const page=Math.floor(d.offset/d.limit)+1;
   const from=d.total?d.offset+1:0, to=Math.min(d.offset+d.contacts.length,d.total);
-  $("#page").innerHTML=`<div class="card"><h2>Synced contacts <span class="muted">(${d.total} linked)</span></h2>
+  $("#page").innerHTML=`<div class="card"><div class="row"><h2>Synced contacts <span class="muted">(${d.total}${q?" matching":" linked"})</span></h2>
+    <input id="csearch" placeholder="Search name or email…" value="${esc(q)}" size="26"
+      onkeydown="if(event.key==='Enter')contactsSearch(this.value)">
+    <button class="btn" onclick="contactsSearch($('#csearch').value)">Search</button>
+    ${q?`<button class="btn" onclick="contactsSearch('')">Clear</button>`:""}</div>
   <div class="scroll"><table><tr><th>First name</th><th>Last name</th><th>Email</th><th>Phone</th><th>Company</th><th>Survey</th><th>Autotask ID</th><th>GHL ID</th><th>Last synced</th></tr>
-  ${d.contacts.map(c=>`<tr>
+  ${d.contacts.map(c=>`<tr onclick="showContact('${esc(c.autotask_id)}')" style="cursor:pointer">
     <td>${esc(c.first_name||"—")}</td><td>${esc(c.last_name||"—")}</td>
     <td>${c.email?`<a href="mailto:${esc(c.email)}">${esc(c.email)}</a>`:"—"}</td>
     <td>${esc(c.phone||"—")}</td>
@@ -168,6 +191,33 @@ async function pageContacts(){
   </div></div>`;}
 function contactsNav(dir){contactsPage.offset=Math.max(0,contactsPage.offset+dir*contactsPage.limit);pageContacts();}
 function contactsPerPage(n){contactsPage.limit=Number(n);contactsPage.offset=0;pageContacts();}
+function contactsSearch(q){contactsPage.q=q.trim();contactsPage.offset=0;pageContacts();}
+
+async function showContact(id){
+  const d=await api(`/portal/api/contacts/${id}/detail`);AT_BASE=d.autotask_web_base;
+  const c=d.detail||{};
+  $("#page").innerHTML=`<div class="card"><div class="row">
+    <button class="btn" onclick="pageContacts()">← Back</button>
+    <h2>${esc(c.first_name||"")} ${esc(c.last_name||"")}</h2>
+    ${d.excluded?pill("disabled")+" sync disabled":pill("enabled")+" syncing"}</div>
+    <div class="grid" style="margin-top:10px">
+      <div class="stat"><b>${esc(c.email||"—")}</b>Email</div>
+      <div class="stat"><b>${esc(c.phone||"—")}</b>Phone</div>
+      <div class="stat"><b>${c.company_id?`<a target="_blank" href="${AT_BASE}/Mvc/CRM/AccountDetail.mvc?accountId=${esc(c.company_id)}">${esc(c.company_name||c.company_id)}</a>`:"—"}</b>Company</div>
+      <div class="stat"><b>${fmtDt(d.last_synced_at)}</b>Last synced</div>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <a class="btn" target="_blank" href="${AT_BASE}/Mvc/CRM/ContactDetail.mvc?contactId=${esc(d.autotask_id)}">Open in Autotask</a>
+      <span class="muted">GHL id: ${esc(d.ghl_id||"—")}</span>
+      ${d.excluded
+        ?`<button class="btn success" onclick="api('/portal/api/exclusions/contact/${esc(d.autotask_id)}',{method:'DELETE'}).then(()=>showContact('${esc(d.autotask_id)}'))">Enable sync</button>`
+        :`<button class="btn danger" onclick="api('/portal/api/exclusions',{method:'POST',body:JSON.stringify({entity_type:'contact',autotask_id:'${esc(d.autotask_id)}',reason:'portal detail view'})}).then(()=>showContact('${esc(d.autotask_id)}'))">Disable sync</button>`}
+    </div></div>
+  <div class="card"><h2>Sync history</h2><div class="scroll"><table>
+    <tr><th>Time</th><th>Direction</th><th>Op</th><th>Status</th><th>Summary</th></tr>
+    ${d.history.map(h=>`<tr><td>${fmtDt(h.timestamp)}</td><td class="muted">${esc(h.direction)}</td>
+      <td>${esc(h.operation)}</td><td>${pill(h.status)}</td><td>${esc(h.summary)}</td></tr>`).join("")||"<tr><td colspan=5 class=muted>No history.</td></tr>"}
+  </table></div></div>`;}
 
 const RULE_FIELDS={companyType:"Customer type",classification:"Classification",isActive:"Account active",ownerResourceID:"Account owner",marketSegmentID:"Market segment"};
 function ruleRows(criteria){return (criteria?.rules||[]).map(r=>`${RULE_FIELDS[r.field]||r.field} ${r.operator} ${r.value}`).join(" AND ")||"(no rules — everything matches)";}
@@ -244,21 +294,65 @@ async function dryRun(id){await api(`/portal/api/profiles/${id}/dry-run`,{method
 async function liveRun(id){if(!confirm("Run LIVE sync now? Writes to GHL."))return;
   try{await api(`/portal/api/profiles/${id}/run`,{method:"POST"});toast("Live sync started.");setTimeout(()=>route(),4000);}catch(e){toast("Blocked: "+e.message);}}
 async function approveProfile(id){try{await api(`/portal/api/profiles/${id}/approve`,{method:"POST",body:"{}"});toast("Approved for live sync.");route();}catch(e){toast(e.message);}}
+let critFieldOpts=null;
 async function editCriteria(id){const p=await api(`/portal/api/profiles/${id}`);
-  const cur=JSON.stringify(p.criteria,null,1);
-  const txt=prompt('Criteria JSON — rules AND together. Fields: companyType, classification, isActive, ownerResourceID, marketSegmentID. Ops: eq, ne, in, not_in.',cur);
-  if(!txt)return;try{const criteria=JSON.parse(txt);
-    await api(`/portal/api/profiles/${id}`,{method:"PUT",body:JSON.stringify({criteria})});
-    toast("Criteria updated — a new dry-run is now required.");route();}catch(e){toast("Invalid: "+e.message);}}
-async function editSchedule(id){
-  const type=prompt("Schedule type: manual | preset | interval | daily | weekdays | weekly | once","preset");if(type===null)return;
-  let config=null;
-  if(type==="preset")config={preset:prompt("Preset: weekday_7am | weekday_6pm | saturday_9am | sunday_9am | every_4h_business | overnight | hourly | daily_7am","weekday_7am")};
-  else if(type==="interval")config={every_hours:Number(prompt("Every how many hours?","4"))};
-  else if(["daily","weekdays","weekly"].includes(type))config={time:prompt("Time of day (HH:MM, Sydney time)","07:00"),days:type==="weekly"?JSON.parse(prompt("Days array (0=Mon…6=Sun)","[0,1,2,3,4]")):undefined};
-  else if(type==="once")config={at:prompt("Run once at (YYYY-MM-DDTHH:MM, Sydney)","")};
-  const enabled=type!=="manual"&&confirm("Enable this schedule now?");
-  await api(`/portal/api/profiles/${id}/schedule`,{method:"POST",body:JSON.stringify({schedule_type:type,schedule_config:config,schedule_enabled:enabled,schedule_paused:false})});
+  if(!critFieldOpts){try{critFieldOpts=(await api("/admin/criteria/fields")).fields;}catch(e){critFieldOpts={};}}
+  let rules=(p.criteria?.rules||[]).map(r=>({...r}));
+  const fieldSel=(v)=>`<select class="cr-field" onchange="critValSlot(this)">${Object.keys(RULE_FIELDS).map(f=>`<option value="${f}" ${f===v?"selected":""}>${RULE_FIELDS[f]}</option>`).join("")}</select>`;
+  const opSel=(v)=>`<select class="cr-op">${[["eq","is"],["ne","is not"],["in","is any of"],["not_in","is none of"]].map(([o,l])=>`<option value="${o}" ${o===v?"selected":""}>${l}</option>`).join("")}</select>`;
+  const valInput=(f,v)=>{const opts=critFieldOpts?.[f]?.options;
+    return opts&&Object.keys(opts).length?`<select class="cr-val">${Object.entries(opts).map(([ov,l])=>`<option value="${ov}" ${String(ov)===String(v)?"selected":""}>${l}</option>`).join("")}</select>`
+    :`<input class="cr-val" value="${esc(v??"")}" size="12">`;};
+  const rowHtml=(r)=>`<div class="row cr-row" style="margin:4px 0">${fieldSel(r.field)}${opSel(r.operator)}<span class="cr-slot">${valInput(r.field,r.value)}</span><button class="btn danger" onclick="this.parentElement.remove()">✕</button></div>`;
+  $("#page").insertAdjacentHTML("afterbegin",`<div class="card" id="crit-editor"><h2>Edit criteria — ${esc(p.name)}</h2>
+    <div class="muted">Rules AND together against the contact's Autotask Account. Saving invalidates prior dry-runs.</div>
+    <div id="crit-rows">${rules.map(rowHtml).join("")}</div>
+    <div class="row" style="margin-top:8px">
+      <button class="btn" onclick="$('#crit-rows').insertAdjacentHTML('beforeend',${JSON.stringify(rowHtml({field:"companyType",operator:"eq",value:"1"})).replace(/"/g,"&quot;")})">+ Add rule</button>
+      <button class="btn primary" onclick="saveCriteria(${p.id})">Save criteria</button>
+      <button class="btn" onclick="$('#crit-editor').remove()">Cancel</button>
+    </div></div>`);
+  window.critValSlot=(sel)=>{const row=sel.closest(".cr-row");row.querySelector(".cr-slot").innerHTML=valInput(sel.value,"");};}
+async function saveCriteria(id){
+  const rules=[...document.querySelectorAll("#crit-editor .cr-row")].map(row=>({
+    field:row.querySelector(".cr-field").value,
+    operator:row.querySelector(".cr-op").value,
+    value:row.querySelector(".cr-val").value}));
+  await api(`/portal/api/profiles/${id}`,{method:"PUT",body:JSON.stringify({criteria:{rules}})});
+  toast("Criteria saved — a new dry-run is now required.");route();}
+
+async function editSchedule(id){const p=await api(`/portal/api/profiles/${id}`);
+  const cfg=p.schedule_config||{};
+  $("#page").insertAdjacentHTML("afterbegin",`<div class="card" id="sched-editor"><h2>Edit schedule — ${esc(p.name)}</h2>
+    <div class="row" style="margin:8px 0">
+      <label>Type</label>
+      <select id="sch-type" onchange="schedSlots()">
+        ${["manual","preset","interval","daily","weekdays","weekly","once"].map(t=>`<option ${t===p.schedule_type?"selected":""}>${t}</option>`).join("")}
+      </select>
+      <span id="sch-slots"></span>
+    </div>
+    <div class="row"><label><input type="checkbox" id="sch-enabled" ${p.schedule_enabled?"checked":""}> Enabled</label>
+      <label><input type="checkbox" id="sch-paused" ${p.schedule_paused?"checked":""}> Paused</label>
+      <span class="muted">Times are Australia/Sydney. Live runs still require dry-run + approval.</span></div>
+    <div class="row" style="margin-top:8px"><button class="btn primary" onclick="saveSchedule(${p.id})">Save schedule</button>
+      <button class="btn" onclick="$('#sched-editor').remove()">Cancel</button></div></div>`);
+  window.schedSlots=()=>{const t=$("#sch-type").value;let html="";
+    if(t==="preset")html=`<select id="sch-preset">${["weekday_7am","weekday_6pm","saturday_9am","sunday_9am","every_4h_business","overnight","hourly","daily_7am"].map(x=>`<option ${x===cfg.preset?"selected":""}>${x}</option>`).join("")}</select>`;
+    else if(t==="interval")html=`every <input id="sch-hours" size="3" value="${cfg.every_hours||4}"> hours`;
+    else if(["daily","weekdays","weekly"].includes(t))html=`at <input id="sch-time" size="5" value="${cfg.time||"07:00"}">`+
+      (t==="weekly"?` on ${["Mon","Tue","Wed","Thu","Fri","Sat","Sun"].map((d,i)=>`<label style="margin-right:4px"><input type="checkbox" class="sch-day" value="${i}" ${(cfg.days||[0,1,2,3,4]).includes(i)?"checked":""}>${d}</label>`).join("")}`:"");
+    else if(t==="once")html=`at <input id="sch-at" size="17" value="${cfg.at||""}" placeholder="2026-07-10T07:00">`;
+    $("#sch-slots").innerHTML=html;};
+  schedSlots();}
+async function saveSchedule(id){const t=$("#sch-type").value;let config=null;
+  if(t==="preset")config={preset:$("#sch-preset").value};
+  else if(t==="interval")config={every_hours:Number($("#sch-hours").value)};
+  else if(["daily","weekdays","weekly"].includes(t)){config={time:$("#sch-time").value};
+    if(t==="weekly")config.days=[...document.querySelectorAll(".sch-day:checked")].map(c=>Number(c.value));}
+  else if(t==="once")config={at:$("#sch-at").value};
+  await api(`/portal/api/profiles/${id}/schedule`,{method:"POST",body:JSON.stringify({
+    schedule_type:t,schedule_config:config,
+    schedule_enabled:$("#sch-enabled").checked,schedule_paused:$("#sch-paused").checked})});
   toast("Schedule saved.");route();}
 async function exportDryRun(id){const p=await api(`/portal/api/profiles/${id}`);
   const blob=new Blob([JSON.stringify({profile:p.name,summary:p.last_dry_run_summary,exported:new Date().toISOString()},null,2)],{type:"application/json"});

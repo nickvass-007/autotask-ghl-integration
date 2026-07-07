@@ -302,6 +302,9 @@ async def run_dry_run(
         profile.review_reason = reason
         profile.schedule_paused = True
         log.warning("Profile %s paused for review: %s", profile.name, reason)
+        from .notify import notify
+
+        await notify(session, "Paused for review", f"{profile.name}: {reason}")
     elif profile.review_state in ("dry_run_required", "review_required"):
         profile.review_state = (
             "pending" if profile.requires_approval_before_live_sync else "approved"
@@ -463,4 +466,12 @@ async def run_live(
     profile.last_live_sync_job_id = job.id
     profile.last_run_at = utcnow()
     session.commit()
+    from .notify import notify
+
+    await notify(
+        session,
+        f"Live sync {job.status}",
+        f"{profile.name}: pushed {pushed}, skipped {skipped}, errors {errors}"
+        + (f" — {job.error}" if job.error else ""),
+    )
     return job
