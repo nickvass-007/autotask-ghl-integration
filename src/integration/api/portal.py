@@ -486,9 +486,15 @@ async def customers(
 
 @router.get("/portal/api/contacts")
 async def contacts(
-    request: Request, q: str = "", offset: int = 0, x_admin_token: str = Header(default="")
+    request: Request,
+    q: str = "",
+    offset: int = 0,
+    limit: int = 100,
+    x_admin_token: str = Header(default=""),
 ) -> JSONResponse:
     _authorize(request, x_admin_token)
+    limit = limit if limit in (50, 100, 200) else 100
+    offset = max(0, offset)
     with session_scope() as session:
         settings = get_portal_settings(session)
         stmt = (
@@ -499,7 +505,7 @@ async def contacts(
             )
             .order_by(EntityMapping.last_synced_at.desc())
             .offset(offset)
-            .limit(100)
+            .limit(limit)
         )
         rows = list(session.execute(stmt).scalars())
         total = (
@@ -514,6 +520,7 @@ async def contacts(
             {
                 "total": total,
                 "offset": offset,
+                "limit": limit,
                 "contacts": [
                     {
                         "autotask_id": r.autotask_id,

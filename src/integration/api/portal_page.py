@@ -127,12 +127,31 @@ async function pageCustomers(){const profiles=(await api("/portal/api/profiles")
       <td>${esc(c.classification||"—")}</td><td>${c.linked?pill("linked"):pill("new")}${c.ghl_id?` <span class="muted">GHL ${esc(c.ghl_id)}</span>`:""}</td></tr>`).join("")||"<tr><td colspan=5 class=muted>No rows — run a dry-run on a profile or sync companies.</td></tr>"}
     </table></div></div>`;}
 
-async function pageContacts(){const d=await api("/portal/api/contacts");AT_BASE=d.autotask_web_base;
+let contactsPage={offset:0,limit:100};
+async function pageContacts(){
+  const {offset,limit}=contactsPage;
+  const d=await api(`/portal/api/contacts?offset=${offset}&limit=${limit}`);AT_BASE=d.autotask_web_base;
+  const pages=Math.max(1,Math.ceil(d.total/d.limit));
+  const page=Math.floor(d.offset/d.limit)+1;
+  const from=d.total?d.offset+1:0, to=Math.min(d.offset+d.contacts.length,d.total);
   $("#page").innerHTML=`<div class="card"><h2>Synced contacts <span class="muted">(${d.total} linked)</span></h2>
   <div class="scroll"><table><tr><th>Autotask ID</th><th>GHL ID</th><th>Last synced</th></tr>
   ${d.contacts.map(c=>`<tr><td><a target="_blank" href="${AT_BASE}/Mvc/CRM/ContactDetail.mvc?contactId=${esc(c.autotask_id)}">${esc(c.autotask_id)}</a></td>
     <td class="muted">${esc(c.ghl_id)}</td><td>${fmtDt(c.last_synced_at)}</td></tr>`).join("")}
-  </table></div></div>`;}
+  </table></div>
+  <div class="row" style="margin-top:12px;justify-content:space-between">
+    <span class="muted">Showing <b>${from}–${to}</b> of <b>${d.total}</b> records</span>
+    <span class="row">
+      <button class="btn" ${page<=1?"disabled":""} onclick="contactsNav(-1)">‹ Prev</button>
+      <span>Page <b>${page}</b> of <b>${pages}</b></span>
+      <button class="btn" ${page>=pages?"disabled":""} onclick="contactsNav(1)">Next ›</button>
+      <select onchange="contactsPerPage(this.value)">
+        ${[50,100,200].map(n=>`<option value="${n}" ${n===d.limit?"selected":""}>${n} / page</option>`).join("")}
+      </select>
+    </span>
+  </div></div>`;}
+function contactsNav(dir){contactsPage.offset=Math.max(0,contactsPage.offset+dir*contactsPage.limit);pageContacts();}
+function contactsPerPage(n){contactsPage.limit=Number(n);contactsPage.offset=0;pageContacts();}
 
 const RULE_FIELDS={companyType:"Customer type",classification:"Classification",isActive:"Account active",ownerResourceID:"Account owner",marketSegmentID:"Market segment"};
 function ruleRows(criteria){return (criteria?.rules||[]).map(r=>`${RULE_FIELDS[r.field]||r.field} ${r.operator} ${r.value}`).join(" AND ")||"(no rules — everything matches)";}
