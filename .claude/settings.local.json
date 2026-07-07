@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c \"import sqlalchemy, pydantic, pydantic_settings, fastapi, httpx, yaml; print\\('core deps present'\\)\")",
+      "PowerShell(py -0p 2>&1)",
+      "PowerShell(py -3.12 --version 2>&1)",
+      "PowerShell(python -m venv .venv)",
+      "PowerShell(.\\\\.venv\\\\Scripts\\\\python.exe -m pip install --quiet --upgrade pip 2>&1)",
+      "PowerShell(.\\\\.venv\\\\Scripts\\\\python.exe --version)"
+    ]
+  }
+}

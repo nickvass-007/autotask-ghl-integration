@@ -1,0 +1,41 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Pipeline & stage mapping config (Spec §10.3). Schema present in Stage 1; the
+# Opportunity/Ticket logic that consumes it is Stage 2.
+#
+# ⚠️ TWO SEPARATE MAPS. A GHL pipeline must never write to BOTH Autotask entities
+# (Opportunity AND Ticket) — that is the primary duplication risk (Spec §10.1).
+#   - sales_pipeline   -> Autotask Opportunity stages
+#   - service_pipeline -> Autotask Ticket statuses (read-only mirror, AT->GHL only)
+#
+# At startup the engine fetches both sides' picklists/pipelines via API and
+# validates every entry resolves to a real ID. Unmapped stage at runtime routes to
+# approval as "unmapped stage" — never guessed.
+#
+# Replace the placeholder IDs below with real ones from your GHL test location and
+# Autotask sandbox once those accounts exist.
+# ─────────────────────────────────────────────────────────────────────────────
+
+sales_pipeline:
+  ghl_pipeline_id: "REPLACE_WITH_GHL_SALES_PIPELINE_ID"
+  autotask_entity: opportunity
+  # The closed-won stage IS the conversion/handoff signal (Spec §8.2) — Stage C.
+  closed_won_stage_id: "REPLACE_WITH_GHL_CLOSED_WON_STAGE_ID"
+  stages:
+    - ghl_stage_id: "REPLACE_WITH_GHL_NEW_LEAD_STAGE_ID"
+      autotask_status_value: "1"          # Autotask Opportunity stage picklist value
+      direction: ghl_to_autotask
+      active: true
+    - ghl_stage_id: "REPLACE_WITH_GHL_QUALIFIED_STAGE_ID"
+      autotask_status_value: "2"
+      direction: ghl_to_autotask
+      active: true
+
+service_pipeline:
+  ghl_pipeline_id: "REPLACE_WITH_GHL_SERVICE_PIPELINE_ID"
+  autotask_entity: ticket
+  # Tickets are a one-way (Autotask -> GHL) read-only mirror for the whole of v1.
+  stages:
+    - ghl_stage_id: "REPLACE_WITH_GHL_NEW_TICKET_STAGE_ID"
+      autotask_status_value: "1"          # Autotask Ticket status picklist value
+      direction: autotask_to_ghl
+      active: true

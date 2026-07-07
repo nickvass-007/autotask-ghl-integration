@@ -1,0 +1,58 @@
+[project]
+name = "autotask-ghl-integration"
+version = "0.1.0"
+description = "In-house integration between Autotask PSA and GoHighLevel, hosted on Azure."
+requires-python = ">=3.12"
+dependencies = [
+    # ── Web API / bot endpoint / admin UI host ──
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.34",
+    # ── Config & validation ──
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+    "pyyaml>=6.0",
+    # ── Database: ORM + migrations (portable schema, Spec §3.4) ──
+    "sqlalchemy>=2.0",
+    "alembic>=1.14",
+    "psycopg[binary]>=3.2",          # Postgres driver (local dev)
+    # pyodbc is added at deploy time for Azure SQL — kept out of local deps
+    # ── HTTP client for Autotask / GHL / Graph ──
+    "httpx>=0.28",
+    "tenacity>=9.0",                 # exponential backoff + jitter (Spec §12.1)
+    # ── Teams bot (Azure Bot Service) ──
+    "botbuilder-core>=4.16",
+    "botbuilder-schema>=4.16",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "respx>=0.21",                   # mock httpx calls in tests
+    "ruff>=0.8",
+    "mypy>=1.13",
+]
+azuresql = [
+    "pyodbc>=5.2",                   # installed only where Azure SQL is targeted
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/integration"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.mypy]
+python_version = "3.12"
+plugins = ["pydantic.mypy"]
+ignore_missing_imports = true

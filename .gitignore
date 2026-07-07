@@ -1,0 +1,39 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Secrets & environment  ── NEVER commit these. (Spec §3.3)
+# API keys, the Autotask secret/integration code, GHL OAuth client secret and
+# tokens, and DB connection strings must never enter Git history. They live in a
+# git-ignored .env locally, and in Azure Key Vault in production.
+# ─────────────────────────────────────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Local DB / logs
+*.sqlite3
+*.log
+pgdata/
+
+# Build / dist
+dist/
+build/

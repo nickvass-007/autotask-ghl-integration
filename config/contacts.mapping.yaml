@@ -1,0 +1,159 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Contacts field-mapping + source-of-truth config (Spec §9.2).
+#
+# This file is the single source of truth for how GHL contact fields map to
+# Autotask Contact/Account fields, and the gating behaviour per field. The sync
+# engine reads it — nothing about field behaviour is hardcoded in Python.
+#
+# Per-field keys:
+#   canonical        : canonical attribute name (CanonicalContact)
+#   ghl              : GHL contact field name
+#   autotask         : Autotask target ("Contact.x" or "Account.x")
+#   at_to_ghl        : how Autotask -> GHL behaves (overwrite | skip)
+#   ghl_to_at_empty  : behaviour when the Autotask field is EMPTY (add | skip)
+#   ghl_to_at_conflict: behaviour when Autotask field is POPULATED and differs
+#                       (approval | never | n/a) — approvals carry a severity
+#   severity         : low | med | high  (approval severity when conflict -> approval)
+#   notes            : human context
+#
+# ⚠️ companyName is HIGH severity and NEVER auto-renames an Account (Spec §9.2/§9.3).
+# ─────────────────────────────────────────────────────────────────────────────
+entity: contact
+
+# Default behaviour for the GHL -> Autotask direction (the gated one, Spec §5.2).
+defaults:
+  auto_apply_additive: true        # fill EMPTY Autotask fields automatically (logged)
+  conflict_action: approval        # populated-field conflict -> approval, never auto-overwrite
+
+fields:
+  - canonical: email
+    ghl: email
+    autotask: Contact.emailAddress
+    at_to_ghl: overwrite
+    ghl_to_at_empty: add
+    ghl_to_at_conflict: approval
+    severity: high                 # match key — changing it is dangerous
+    notes: Primary dedupe key.
+
+  - canonical: first_name
+    ghl: firstName
+    autotask: Contact.firstName
+    at_to_ghl: overwrite
+    ghl_to_at_empty: add
+    ghl_to_at_conflict: approval
+    severity: low
+
+  - canonical: last_name
+    ghl: lastName
+    autotask: Contact.lastName
+    at_to_ghl: overwrite
+    ghl_to_at_empty: add
+    ghl_to_at_conflict: approval
+    severity: low
+
+  - canonical: phone
+    ghl: phone
+    autotask: Contact.phone
+    at_to_ghl: overwrite
+    ghl_to_at_empty: add
+    ghl_to_at_conflict: approval
+    severity: med
+
+  - canonical: mobile
+    ghl: mobile
+    autotask: Contact.mobilePhone
+    at_to_ghl: overwrite
+    ghl_to_at_empty: add
+    ghl_to_at_conflict: approval
+    severity: med
+
+  - canonical: address1
+    ghl: address1
+    autotask: Contact.addressLine
+    at_to_ghl: overwrite
+    ghl_to_at_empty: add
+    ghl_to_at_conflict: approval
+    severity: low
+
+  - canonical: city
+    ghl: city
+    autotask: Contact.city
+    at_to_ghl: overwrite
+    ghl_to_at_empty: add
+    ghl_to_at_conflict: approval
+    severity: low
+
+  - canonical: state
+    ghl: state
+    autotask: Contact.state
+    at_to_ghl: overwrite
+    ghl_to_at_empty: add
+    ghl_to_at_conflict: approval
+    severity: low
+
+  - canonical: postal_code
+    ghl: postalCode
+    autotask: Contact.zipCode
+    at_to_ghl: overwrite
+    ghl_to_at_empty: add
+    ghl_to_at_conflict: approval
+    severity: low
+
+  - canonical: country
+    ghl: country
+    autotask: Contact.country
+    at_to_ghl: overwrite
+    ghl_to_at_empty: add
+    ghl_to_at_conflict: approval
+    severity: low
+
+  - canonical: title
+    ghl: title
+    autotask: Contact.title
+    at_to_ghl: overwrite
+    ghl_to_at_empty: add
+    ghl_to_at_conflict: approval
+    severity: low
+
+  - canonical: company_name
+    ghl: companyName
+    autotask: Account.companyName
+    at_to_ghl: overwrite            # read-only to GHL
+    ghl_to_at_empty: link           # resolved via Account linkage (Spec §9.3), not a field write
+    ghl_to_at_conflict: approval
+    severity: high                  # ⚠️ NEVER auto-rename an Account
+    notes: Handled by Account-linkage guard, not a plain field write.
+
+  - canonical: website
+    ghl: website
+    autotask: Account.webAddress
+    at_to_ghl: overwrite
+    ghl_to_at_empty: add
+    ghl_to_at_conflict: approval
+    severity: low
+
+  - canonical: date_of_birth
+    ghl: dateOfBirth
+    autotask: Contact.customField.dateOfBirth   # custom field, only if mapped
+    at_to_ghl: overwrite
+    ghl_to_at_empty: add
+    ghl_to_at_conflict: approval
+    severity: low
+    optional: true
+
+  - canonical: source
+    ghl: source
+    autotask: Contact.customField.source
+    at_to_ghl: skip
+    ghl_to_at_empty: add            # set on create only
+    ghl_to_at_conflict: never       # never update after create
+    severity: low
+    create_only: true
+
+# Autotask-managed — NEVER synced from GHL (Spec §9.2).
+do_not_sync:
+  - id
+  - companyID            # owned by linkage logic
+  - lifecycle_status
+  - createDate
+  - lastActivityDate

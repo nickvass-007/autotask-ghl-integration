@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell($env:ENVIRONMENT=\"sandbox\"; .\\\\.venv\\\\Scripts\\\\python.exe -m pytest -q 2>&1 | Select-Object -Last 45)",
+      "PowerShell($env:ENVIRONMENT=\"sandbox\"; .\\\\.venv\\\\Scripts\\\\python.exe -c \"import sys; sys.path.insert\\(0,'src'\\); from integration.api import main; print\\('API imports OK:', main.app.title\\)\" 2>&1 | Select-Object -Last 15)"
+    ]
+  }
+}

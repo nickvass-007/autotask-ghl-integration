@@ -1,0 +1,29 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Local development database only. (Spec §3.1 / §3.4: Postgres locally, Azure SQL
+# in production.) This spins up a disposable Postgres so you don't have to install
+# one natively on Windows. It is NOT used in production.
+#
+#   Start :  docker compose up -d
+#   Stop  :  docker compose down            (keeps data in the named volume)
+#   Reset :  docker compose down -v         (deletes the data volume)
+# ─────────────────────────────────────────────────────────────────────────────
+services:
+  db:
+    image: postgres:16
+    container_name: autotask_ghl_db
+    environment:
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: app
+      POSTGRES_DB: autotask_ghl
+    ports:
+      - "5432:5432"            # host:container — matches DATABASE_URL in .env.example
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app -d autotask_ghl"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  pgdata:
