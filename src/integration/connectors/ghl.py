@@ -218,6 +218,9 @@ class GHLConnector(Connector):
     def _payload(self, contact: CanonicalContact) -> dict:
         payload = {
             "locationId": self._settings.ghl_location_id,
+            # Set when the contact's Autotask Account is mirrored as a GHL
+            # Business (see sync/companies.py) — links the contact to it.
+            "businessId": contact.extra.get("ghl_business_id"),
             "email": contact.email,
             "firstName": contact.first_name,
             "lastName": contact.last_name,
@@ -394,6 +397,49 @@ class GHLConnector(Connector):
             f"{GHL_API_BASE}/opportunities/{external_id}",
             headers=self._headers(),
             json=body,
+        )
+        return PushResult(ok=True, external_id=external_id, detail=f"updated:{resp.status_code}")
+
+    # ── Businesses (GHL company objects) — mirror of Autotask Accounts ──────────
+    async def find_businesses(self, name: str) -> list[dict]:
+        resp = await request_json(
+            self._client,  # type: ignore[arg-type]
+            "GET",
+            f"{GHL_API_BASE}/businesses/",
+            headers=self._headers(),
+            params={"locationId": self._settings.ghl_location_id},
+        )
+        wanted = (name or "").strip().lower()
+        return [
+            b
+            for b in resp.json().get("businesses", [])
+            if not wanted or (b.get("name") or "").strip().lower() == wanted
+        ]
+
+    async def create_business(self, company) -> PushResult:
+        payload = {
+            "locationId": self._settings.ghl_location_id,
+            "name": company.name or "(unnamed)",
+        }
+        if getattr(company, "website", None):
+            payload["website"] = company.website
+        resp = await request_json(
+            self._client,  # type: ignore[arg-type]
+            "POST",
+            f"{GHL_API_BASE}/businesses/",
+            headers=self._headers(),
+            json=payload,
+        )
+        new_id = str(resp.json().get("business", {}).get("id"))
+        return PushResult(ok=True, external_id=new_id, detail="created")
+
+    async def update_business(self, external_id: str, changes: dict[str, object]) -> PushResult:
+        resp = await request_json(
+            self._client,  # type: ignore[arg-type]
+            "PUT",
+            f"{GHL_API_BASE}/businesses/{external_id}",
+            headers=self._headers(),
+            json={k: v for k, v in changes.items() if v is not None},
         )
         return PushResult(ok=True, external_id=external_id, detail=f"updated:{resp.status_code}")
 

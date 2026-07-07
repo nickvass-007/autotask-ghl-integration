@@ -55,6 +55,14 @@ async def push_autotask_contact(
     autotask_id = at_contact.source_id
     link = _mapping_by_autotask(session, autotask_id) if autotask_id else None
 
+    # Attach the mirrored GHL Business when the Account has one (companies.py).
+    if at_contact.company_id:
+        from .companies import company_mapping_by_autotask
+
+        company_link = company_mapping_by_autotask(session, at_contact.company_id)
+        if company_link and company_link.ghl_id:
+            at_contact.extra["ghl_business_id"] = company_link.ghl_id
+
     if link and link.ghl_id:
         # Overwrite the GHL contact with authoritative Autotask values (Spec §5.1).
         changes = {
@@ -66,6 +74,7 @@ async def push_autotask_contact(
             "postalCode": at_contact.postal_code,
             "country": at_contact.country,
             "companyName": at_contact.company_name,
+            "businessId": at_contact.extra.get("ghl_business_id"),
         }
         await ghl.update_contact(link.ghl_id, changes)
         link.last_synced_at = utcnow()

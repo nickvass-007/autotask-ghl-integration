@@ -187,6 +187,8 @@ class FakeGHL:
     notes: list[tuple[str, str]] = field(default_factory=list)
     tags: dict[str, list[str]] = field(default_factory=dict)
     custom_fields: dict[str, dict] = field(default_factory=dict)
+    businesses: dict[str, dict] = field(default_factory=dict)
+    business_updates: list[tuple[str, dict]] = field(default_factory=list)
     _next_id: int = 1
 
     async def authenticate(self) -> None:
@@ -207,6 +209,23 @@ class FakeGHL:
 
     async def get_pipelines(self) -> list[dict]:
         return self.pipelines
+
+    async def find_businesses(self, name: str) -> list[dict]:
+        wanted = (name or "").strip().lower()
+        return [
+            b for b in self.businesses.values()
+            if not wanted or (b.get("name") or "").strip().lower() == wanted
+        ]
+
+    async def create_business(self, company) -> PushResult:
+        self._next_id += 1
+        new_id = f"biz{self._next_id}"
+        self.businesses[new_id] = {"id": new_id, "name": company.name}
+        return PushResult(ok=True, external_id=new_id, detail="created")
+
+    async def update_business(self, external_id: str, changes: dict) -> PushResult:
+        self.business_updates.append((str(external_id), dict(changes)))
+        return PushResult(ok=True, external_id=str(external_id), detail="updated")
 
     async def get_opportunity(self, external_id: str) -> CanonicalDeal | None:
         return self.opportunities.get(str(external_id))
