@@ -1,7 +1,7 @@
 """Send a signed test GHL contact webhook to the running app.
 
 Computes the HMAC-SHA256 signature the connector expects (using GHL_WEBHOOK_SECRET
-from your .env) and POSTs a sample contact to /webhooks/ghl/contact, so you can
+from your .env) and POSTs a sample contact to /webhooks/crm/contact, so you can
 watch the gated Contacts flow run against your Autotask sandbox without waiting for
 a real GHL webhook.
 
@@ -35,7 +35,7 @@ def load_env(path: Path) -> dict[str, str]:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--url", default="http://localhost:8000/webhooks/ghl/contact")
+    parser.add_argument("--url", default="http://localhost:8000/webhooks/crm/contact")
     parser.add_argument("--email", default="jane.tester@example-newco.com")
     parser.add_argument("--first", default="Jane")
     parser.add_argument("--last", default="Tester")

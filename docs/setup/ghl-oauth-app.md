@@ -22,20 +22,28 @@ sub-account / location** and a Marketplace app scoped to least privilege (Spec �
    - `contacts.readonly`
    - `contacts.write`
    *(Opportunities scopes come in Stage 2.)*
-4. **Redirect URI:** add `http://localhost:8000/oauth/ghl/callback` for local dev.
+4. **Redirect URI:** add `http://localhost:8000/oauth/crm/callback` for local dev.
    (Add your deployed App Service callback URL later for production.)
+   ⚠️ The path must not contain "ghl", "highlevel", or "leadconnector" — the
+   marketplace rejects redirect URIs that reference their brand ("The redirect uri
+   contains a Highlevel reference").
 5. Save. The portal shows your **Client ID** and **Client Secret**.
 
-## 3. Webhooks (signature secret)
+## 3. Webhooks (signatures)
 
 1. In the app's **Webhooks** section, subscribe to **Contact Create** and **Contact
    Update**.
-2. Set the webhook URL to your endpoint (`/webhooks/ghl/contact`). For local testing
+2. Set the webhook URL to your endpoint (`/webhooks/crm/contact` — brand-neutral
+   path, same restriction as the redirect URI). For local testing
    use a tunnel (e.g. `ngrok http 8000`) and use the tunnel URL.
-3. Note the **signing secret** → `GHL_WEBHOOK_SECRET`. ⚠️ Inbound webhooks are
-   rejected unless the signature verifies (Spec §4). *(The connector verifies an
-   HMAC-SHA256 over the raw body; if your app uses GHL's RSA public-key signing
-   instead, swap the verify body in `connectors/ghl.py` — the call site is unchanged.)*
+3. **There is no signing secret to copy.** GHL signs marketplace webhooks with
+   *their* private key; the connector verifies the `x-ghl-signature` header
+   (Ed25519) against GHL's published public key, which is baked into
+   `connectors/ghl.py`. The legacy `x-wh-signature` (RSA-SHA256, sunset
+   2026-07-01) is also accepted during the transition window. ⚠️ Inbound webhooks
+   are rejected unless a signature verifies (Spec §4).
+4. `GHL_WEBHOOK_SECRET` in `.env` is **optional** — set it only so
+   `scripts/send_test_contact.py` can send locally signed fake webhooks.
 
 ## 4. Put the values in `.env`
 
@@ -44,7 +52,7 @@ GHL_CLIENT_ID=...
 GHL_CLIENT_SECRET=...
 GHL_LOCATION_ID=...
 GHL_WEBHOOK_SECRET=...
-GHL_REDIRECT_URI=http://localhost:8000/oauth/ghl/callback
+GHL_REDIRECT_URI=http://localhost:8000/oauth/crm/callback
 GHL_SCOPES=contacts.readonly contacts.write
 ```
 

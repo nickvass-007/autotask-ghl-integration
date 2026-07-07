@@ -184,10 +184,15 @@ class AutotaskConnector(Connector):
                 "(Account linkage must run first, Spec §9.3).",
             )
         payload = self._contact_payload(contact)
+        # isActive is REQUIRED on create (Contacts/entityInformation/fields) —
+        # Autotask reports its absence as an opaque 500.
+        payload.setdefault("isActive", 1)
+        # Contacts are a CHILD entity of Companies in the Autotask REST API:
+        # POST /Contacts does not exist (404) — create via the parent collection.
         resp = await request_json(
             self._client,  # type: ignore[arg-type]
             "POST",
-            self._url("Contacts"),
+            self._url(f"Companies/{int(contact.company_id)}/Contacts"),
             headers=self._auth_headers(),
             json=payload,
         )
@@ -205,10 +210,18 @@ class AutotaskConnector(Connector):
             if rule is None or rule.autotask_entity != "Contact" or "." in rule.autotask_field:
                 continue
             payload[rule.autotask_field] = value
+        # Child-entity rule (see create_contact): writes go via the parent Company,
+        # so look up the contact's companyID first.
+        existing = await self.get_contact(external_id)
+        if existing is None or existing.company_id is None:
+            return PushResult(
+                ok=False,
+                detail=f"Cannot update Contact {external_id}: not found or no companyID",
+            )
         resp = await request_json(
             self._client,  # type: ignore[arg-type]
             "PATCH",
-            self._url("Contacts"),
+            self._url(f"Companies/{int(existing.company_id)}/Contacts"),
             headers=self._auth_headers(),
             json=payload,
         )

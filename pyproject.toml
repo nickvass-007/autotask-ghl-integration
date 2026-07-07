@@ -19,6 +19,7 @@ dependencies = [
     # ── HTTP client for Autotask / GHL / Graph ──
     "httpx>=0.28",
     "tenacity>=9.0",                 # exponential backoff + jitter (Spec §12.1)
+    "cryptography>=43.0",            # GHL webhook signature verification (Ed25519/RSA)
     # ── Teams bot (Azure Bot Service) ──
     "botbuilder-core>=4.16",
     "botbuilder-schema>=4.16",

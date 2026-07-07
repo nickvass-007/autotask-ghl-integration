@@ -64,7 +64,8 @@ uvicorn integration.api.main:app --reload --app-dir src
 
 1. Visit `http://localhost:8000/oauth/ghl/authorize` in a browser.
 2. Sign in to your **GHL test sub-account** and approve the app.
-3. GHL redirects to `/oauth/ghl/callback`, which exchanges the code and stores the
+3. GHL redirects to `/oauth/crm/callback` (brand-neutral path — GHL rejects redirect
+   URIs containing "ghl"/"highlevel"), which exchanges the code and stores the
    (rotating) refresh token. You'll see `{"status": "authorized"}`.
 
 > Locally the token is held in process memory for convenience. In production it
@@ -75,7 +76,7 @@ uvicorn integration.api.main:app --reload --app-dir src
 - **Via tests (no live creds needed):** `pytest` — runs the full Contacts flow
   (dedupe → conflict → approval → audit) against in-process fakes. 22 tests.
 - **Via a simulated webhook:** POST a GHL contact payload to
-  `/webhooks/ghl/contact` (you'll need a valid `x-wh-signature` HMAC of the body
+  `/webhooks/crm/contact` (you'll need a valid `x-wh-signature` HMAC of the body
   using `GHL_WEBHOOK_SECRET`). The response reports the action taken
   (`created` / `approval` / `skipped`).
 - **Inspect results** in the DB: `entity_mapping`, `approval_queue`, `audit_log`,

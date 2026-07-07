@@ -2,7 +2,14 @@
   "permissions": {
     "allow": [
       "PowerShell($env:ENVIRONMENT=\"sandbox\"; .\\\\.venv\\\\Scripts\\\\python.exe -m pytest -q 2>&1 | Select-Object -Last 45)",
-      "PowerShell($env:ENVIRONMENT=\"sandbox\"; .\\\\.venv\\\\Scripts\\\\python.exe -c \"import sys; sys.path.insert\\(0,'src'\\); from integration.api import main; print\\('API imports OK:', main.app.title\\)\" 2>&1 | Select-Object -Last 15)"
+      "PowerShell($env:ENVIRONMENT=\"sandbox\"; .\\\\.venv\\\\Scripts\\\\python.exe -c \"import sys; sys.path.insert\\(0,'src'\\); from integration.api import main; print\\('API imports OK:', main.app.title\\)\" 2>&1 | Select-Object -Last 15)",
+      "PowerShell(.\\\\.venv\\\\Scripts\\\\python.exe -m pytest -q 2>&1)",
+      "PowerShell($deadline = \\(Get-Date\\).AddSeconds\\(90\\); while \\(\\(Get-Date\\) -lt $deadline\\) { docker info --format '{{.ServerVersion}}' 2>$null; if \\($LASTEXITCODE -eq 0\\) { break }; Start-Sleep -Seconds 5 }; docker compose up -d 2>&1 | Select-Object -Last 5)",
+      "PowerShell($deadline = \\(Get-Date\\).AddSeconds\\(60\\); do { $h = docker inspect --format '{{.State.Health.Status}}' autotask_ghl_db 2>$null; Start-Sleep -Seconds 3 } while \\($h -ne 'healthy' -and \\(Get-Date\\) -lt $deadline\\); $h; .\\\\.venv\\\\Scripts\\\\alembic.exe upgrade head 2>&1 | Select-Object -Last 6)",
+      "PowerShell($p = Start-Process -FilePath \".\\\\.venv\\\\Scripts\\\\python.exe\" -ArgumentList \"-m\",\"uvicorn\",\"integration.api.main:app\",\"--app-dir\",\"src\",\"--port\",\"8000\" -PassThru -WindowStyle Hidden; $deadline=\\(Get-Date\\).AddSeconds\\(30\\); $ok=$false; while\\(\\(Get-Date\\) -lt $deadline\\){ try { $r = Invoke-RestMethod http://localhost:8000/health -TimeoutSec 2; $ok=$true; break } catch { Start-Sleep -Seconds 2 } }; if\\($ok\\){ $r | ConvertTo-Json -Compress }; Stop-Process -Id $p.Id -Force -Confirm:$false)"
+    ],
+    "additionalDirectories": [
+      "C:\\Users\\nick\\OneDrive - INTERLINKED\\1. Projects\\autotask-ghl-integration"
     ]
   }
 }

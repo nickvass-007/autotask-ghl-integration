@@ -13,6 +13,8 @@ import os
 os.environ.setdefault("ENVIRONMENT", "sandbox")
 os.environ.setdefault("DATABASE_URL", "sqlite+pysqlite:///:memory:")
 os.environ.setdefault("AUTOTASK_HOLDING_ACCOUNT_ID", "")
+# Pin behaviour toggles so a developer's local .env can't change test outcomes.
+os.environ.setdefault("AUTO_APPLY_ADDITIVE", "true")
 
 import pytest
 from sqlalchemy import create_engine

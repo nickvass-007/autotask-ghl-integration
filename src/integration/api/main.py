@@ -3,8 +3,12 @@
 Endpoints (Stage 1):
   GET  /health                 -> liveness + ACTIVE ENVIRONMENT (always visible, §6)
   GET  /oauth/ghl/authorize    -> redirect an admin to GHL to grant the app
-  GET  /oauth/ghl/callback     -> exchange code, store rotating refresh token
-  POST /webhooks/ghl/contact   -> verify signature, run the gated Contacts flow (§9)
+  GET  /oauth/crm/callback     -> exchange code, store rotating refresh token
+                                  (path is brand-neutral: GHL's marketplace rejects
+                                  redirect URIs containing "ghl"/"highlevel")
+  POST /webhooks/crm/contact   -> verify signature, run the gated Contacts flow (§9)
+                                  (brand-neutral path, same reason as the OAuth callback)
+  GET  /admin                  -> minimal ops web UI (approvals + transaction feed)
   GET  /approvals              -> list pending approvals
   POST /approvals/{id}/decide  -> Approve/Reject/Override (verifies caller, §11.1)
   POST /api/messages           -> Teams bot messaging endpoint
@@ -28,6 +32,7 @@ from ..db.session import session_scope
 from ..sync import contacts as contacts_flow
 from ..sync.approvals import list_pending
 from ..teams.bot import handle_command
+from .admin import router as admin_router
 from .deps import get_autotask, get_ghl, set_ghl_token
 
 log = get_logger(__name__)
@@ -47,6 +52,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Autotask ⇄ GoHighLevel Integration", version="0.1.0", lifespan=lifespan)
+app.include_router(admin_router)
 
 
 @app.get("/health")
@@ -71,7 +77,7 @@ async def ghl_authorize() -> RedirectResponse:
     return RedirectResponse(ghl.authorize_url(state))
 
 
-@app.get("/oauth/ghl/callback")
+@app.get("/oauth/crm/callback")
 async def ghl_callback(code: str = "", state: str = "") -> JSONResponse:
     if not code:
         raise HTTPException(status_code=400, detail="missing authorization code")
@@ -83,7 +89,7 @@ async def ghl_callback(code: str = "", state: str = "") -> JSONResponse:
 
 
 # ── GHL inbound webhook -> gated Contacts flow (Spec §4, §9) ──────────────────
-@app.post("/webhooks/ghl/contact")
+@app.post("/webhooks/crm/contact")
 async def ghl_contact_webhook(request: Request) -> JSONResponse:
     body = await request.body()
     ghl = get_ghl()

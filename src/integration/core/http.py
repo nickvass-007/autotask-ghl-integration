@@ -51,5 +51,10 @@ async def request_json(
 ) -> httpx.Response:
     """Issue a request, raise for status (so retries trigger), return the response."""
     response = await client.request(method, url, **kwargs)  # type: ignore[arg-type]
+    if response.status_code >= 400:
+        # Surface the API's error body — without this, 4xx/5xx diagnoses are blind.
+        log.warning(
+            "HTTP %s %s -> %s: %s", method, url, response.status_code, response.text[:1000]
+        )
     response.raise_for_status()
     return response

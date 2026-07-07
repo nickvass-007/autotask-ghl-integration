@@ -58,6 +58,7 @@ class CanonicalContact(CanonicalEntity):
     country: str | None = None
     title: str | None = None
     company_name: str | None = None
+    website: str | None = None  # maps to Account.webAddress (gated, Spec §370 mapping)
     company_id: str | None = None  # resolved link to a CanonicalCompany / Autotask Account
     date_of_birth: str | None = None
     tags: list[str] = field(default_factory=list)

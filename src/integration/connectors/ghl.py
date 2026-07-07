@@ -12,10 +12,18 @@ verification, and the Contacts read/write paths.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
 import hmac
 from dataclasses import dataclass
 from urllib.parse import urlencode
+
+from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import padding
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+from cryptography.hazmat.primitives.asymmetric.rsa import RSAPublicKey
 
 import httpx
 
@@ -33,6 +41,31 @@ from .base import (
 )
 
 log = get_logger(__name__)
+
+# GHL's published webhook-signing public keys (marketplace docs, "Webhook
+# Integration Guide"). Marketplace-app webhooks are signed by GHL's PRIVATE key —
+# there is no per-app shared secret. Current scheme: Ed25519 over the raw body,
+# base64 signature in `x-ghl-signature`. Legacy: RSA-SHA256 in `x-wh-signature`
+# (sunset 2026-07-01, kept for the transition window).
+GHL_ED25519_PUBLIC_KEY_PEM = b"""-----BEGIN PUBLIC KEY-----
+MCowBQYDK2VwAyEAi2HR1srL4o18O8BRa7gVJY7G7bupbN3H9AwJrHCDiOg=
+-----END PUBLIC KEY-----
+"""
+GHL_LEGACY_RSA_PUBLIC_KEY_PEM = b"""-----BEGIN PUBLIC KEY-----
+MIICIjANBgkqhkiG9w0BAQEFAAOCAg8AMIICCgKCAgEAokvo/r9tVgcfZ5DysOSC
+Frm602qYV0MaAiNnX9O8KxMbiyRKWeL9JpCpVpt4XHIcBOK4u3cLSqJGOLaPuXw6
+dO0t6Q/ZVdAV5Phz+ZtzPL16iCGeK9po6D6JHBpbi989mmzMryUnQJezlYJ3DVfB
+csedpinheNnyYeFXolrJvcsjDtfAeRx5ByHQmTnSdFUzuAnC9/GepgLT9SM4nCpv
+uxmZMxrJt5Rw+VUaQ9B8JSvbMPpez4peKaJPZHBbU3OdeCVx5klVXXZQGNHOs8gF
+3kvoV5rTnXV0IknLBXlcKKAQLZcY/Q9rG6Ifi9c+5vqlvHPCUJFT5XUGG5RKgOKU
+J062fRtN+rLYZUV+BjafxQauvC8wSWeYja63VSUruvmNj8xkx2zE/Juc+yjLjTXp
+IocmaiFeAO6fUtNjDeFVkhf5LNb59vECyrHD2SQIrhgXpO4Q3dVNA5rw576PwTzN
+h/AMfHKIjE4xQA1SZuYJmNnmVZLIZBlQAF9Ntd03rfadZ+yDiOXCCs9FkHibELhC
+HULgCsnuDJHcrGNd5/Ddm5hxGQ0ASitgHeMZ0kcIOwKDOzOU53lDza6/Y09T7sYJ
+PQe7z0cvj7aE4B+Ax1ZoZGPzpJlZtGXCsu9aTEGEnKzmsFqwcSsnw3JB31IGKAyk
+T1hhTiaCeIY/OwwwNUY2yvcCAwEAAQ==
+-----END PUBLIC KEY-----
+"""
 
 GHL_API_BASE = "https://services.leadconnectorhq.com"
 GHL_AUTHORIZE_URL = "https://marketplace.gohighlevel.com/oauth/chooselocation"
@@ -250,15 +283,59 @@ class GHLConnector(Connector):
     def verify_webhook(self, headers: dict[str, str], body: bytes) -> bool:
         """Verify an inbound GHL webhook signature (Spec §4, §12.1).
 
-        GHL signs webhook payloads; we compute an HMAC-SHA256 over the raw body with
-        the shared ``GHL_WEBHOOK_SECRET`` and constant-time compare against the
-        signature header. (If your Marketplace app is configured for RSA public-key
-        signatures instead, swap this body for a public-key verify — the call site is
-        unchanged.) An unverified webhook is rejected, never processed."""
-        secret = self._settings.ghl_webhook_secret
-        if not secret:
-            log.warning("GHL_WEBHOOK_SECRET unset — rejecting webhook (fail closed)")
+        Marketplace-app webhooks are signed by GHL's private key — there is no
+        per-app shared secret. Verification order (fail closed):
+
+        1. ``x-ghl-signature`` — current scheme: Ed25519 over the raw body,
+           base64-encoded, verified against GHL's published public key.
+        2. ``x-wh-signature`` + ``GHL_WEBHOOK_SECRET`` set — local-testing path:
+           HMAC-SHA256 with the shared secret (used by scripts/send_test_contact.py).
+        3. ``x-wh-signature`` — legacy GHL scheme: RSA-SHA256, base64-encoded,
+           verified against GHL's legacy public key (sunset 2026-07-01; kept for
+           the transition window).
+        """
+        h = {k.lower(): v for k, v in headers.items()}
+
+        ghl_sig = h.get("x-ghl-signature", "")
+        if ghl_sig:
+            return _verify_ed25519(body, ghl_sig)
+
+        wh_sig = h.get("x-wh-signature", "")
+        if not wh_sig:
+            log.warning("GHL webhook has no signature header — rejecting (fail closed)")
             return False
-        provided = headers.get("x-wh-signature") or headers.get("X-Wh-Signature") or ""
-        expected = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
-        return hmac.compare_digest(provided, expected)
+
+        secret = self._settings.ghl_webhook_secret
+        if secret:
+            expected = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+            if hmac.compare_digest(wh_sig, expected):
+                return True
+
+        return _verify_rsa_legacy(body, wh_sig)
+
+
+def _verify_ed25519(body: bytes, signature_b64: str) -> bool:
+    key = serialization.load_pem_public_key(GHL_ED25519_PUBLIC_KEY_PEM)
+    assert isinstance(key, Ed25519PublicKey)
+    try:
+        key.verify(base64.b64decode(signature_b64, validate=True), body)
+        return True
+    except (InvalidSignature, binascii.Error, ValueError):
+        log.warning("GHL webhook Ed25519 signature verification failed — rejecting")
+        return False
+
+
+def _verify_rsa_legacy(body: bytes, signature_b64: str) -> bool:
+    key = serialization.load_pem_public_key(GHL_LEGACY_RSA_PUBLIC_KEY_PEM)
+    assert isinstance(key, RSAPublicKey)
+    try:
+        key.verify(
+            base64.b64decode(signature_b64, validate=True),
+            body,
+            padding.PKCS1v15(),
+            hashes.SHA256(),
+        )
+        return True
+    except (InvalidSignature, binascii.Error, ValueError):
+        log.warning("GHL webhook legacy RSA signature verification failed — rejecting")
+        return False

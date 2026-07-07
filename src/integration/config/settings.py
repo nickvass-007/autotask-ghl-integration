@@ -46,7 +46,9 @@ class Settings(BaseSettings):
     # ── GoHighLevel ──
     ghl_client_id: str = ""
     ghl_client_secret: str = ""
-    ghl_redirect_uri: str = "http://localhost:8000/oauth/ghl/callback"
+    # ⚠️ Path must not contain "ghl"/"highlevel" — GHL's marketplace validator
+    # rejects redirect URIs that reference their brand.
+    ghl_redirect_uri: str = "http://localhost:8000/oauth/crm/callback"
     ghl_location_id: str = ""
     ghl_webhook_secret: str = ""
     ghl_scopes: str = "contacts.readonly contacts.write"
