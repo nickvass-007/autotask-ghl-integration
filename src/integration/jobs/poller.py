@@ -130,6 +130,10 @@ async def run_poller(*, autotask_factory, ghl_factory, stop: asyncio.Event | Non
             autotask = await autotask_factory()
             ghl = ghl_factory()
             await ghl.authenticate()  # raises if OAuth hasn't been completed yet
+            # Keep the grant fresh: rotate ahead of access-token expiry. The
+            # rotation is persisted via on_token_update, so this also keeps the
+            # stored refresh token current across long idle periods.
+            await ghl.refresh()
             await poll_once(autotask=autotask, ghl=ghl)
             now = loop.time()
             if now - last_reconcile >= settings.reconciliation_interval_seconds:
