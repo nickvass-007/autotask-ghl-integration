@@ -309,7 +309,7 @@ class AutotaskConnector(Connector):
             if f.get("name") == field_name:
                 return {
                     str(v.get("value")): str(v.get("label", v.get("value")))
-                    for v in f.get("picklistValues", [])
+                    for v in (f.get("picklistValues") or [])
                 }
         return {}
 
@@ -324,9 +324,10 @@ class AutotaskConnector(Connector):
         )
         for f in resp.json().get("fields", []):
             if f.get("name") == field_name:
+                # Non-picklist fields carry an explicit null here — guard it.
                 return [
                     str(v.get("value"))
-                    for v in f.get("picklistValues", [])
+                    for v in (f.get("picklistValues") or [])
                     if v.get("isActive", True)
                 ]
         return []
