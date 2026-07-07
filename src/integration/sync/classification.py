@@ -122,12 +122,19 @@ async def sync_classifications(
             label_cache[key] = await autotask.get_picklist_labels(*key)
         return label_cache[key]
 
+    # Customer sync criteria (admin UI) gate the classification push too.
+    from .criteria import AccountFilter
+
+    account_filter = AccountFilter(session, autotask)
+
     checked = pushed = 0
     for row in rows:
         checked += 1
         at_contact = await autotask.get_contact(row.autotask_id)
         if at_contact is None or at_contact.company_id is None:
             continue
+        if not await account_filter.allows_contact(at_contact):
+            continue  # outside the configured sync audience
         account = await autotask.get_account_raw(at_contact.company_id)
         if account is None:
             continue

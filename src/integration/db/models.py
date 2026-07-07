@@ -290,6 +290,30 @@ class SyncCursor(Base):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# sync_criteria — operator-defined filters for WHICH Autotask customers are
+# mirrored to GHL (contacts + classification push). Rules AND together against
+# the contact's Account fields; no active rules = sync everything. Managed via
+# the /admin UI.
+# ─────────────────────────────────────────────────────────────────────────────
+class SyncCriteria(Base):
+    __tablename__ = "sync_criteria"
+
+    id: Mapped[int] = id_column()
+    environment: Mapped[str] = mapped_column(_enum(Environment, "crit_environment"), nullable=False)
+    entity_type: Mapped[str] = mapped_column(String(40), nullable=False, default="contact")
+    field: Mapped[str] = mapped_column(String(80), nullable=False)   # Account field, e.g. companyType
+    operator: Mapped[str] = mapped_column(String(10), nullable=False)  # eq|ne|in|not_in
+    value: Mapped[str] = mapped_column(Text, nullable=False)         # comma-separated for in/not_in
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[datetime] = created_at_column()
+    updated_at: Mapped[datetime] = updated_at_column()
+
+    __table_args__ = (
+        Index("ix_sync_criteria_env", "environment", "entity_type", "active"),
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # circuit_breaker_state — supports the Spec §5.5 circuit breaker. Single row per
 # (environment, target_system); tripped writes are paused until reset.
 # ─────────────────────────────────────────────────────────────────────────────

@@ -28,6 +28,7 @@ from ..db.models import SyncCursor
 from ..db.session import session_scope
 from ..sync.autotask_to_ghl import push_autotask_contact
 from ..sync.classification import sync_classifications
+from ..sync.criteria import AccountFilter
 from ..sync.mirrors import mirror_autotask_opportunity, mirror_autotask_ticket
 from ..sync.reconciliation import expire_stale_approvals, reconcile_contacts
 
@@ -69,10 +70,14 @@ async def poll_once(*, autotask, ghl) -> dict:
         processed = 0
         with session_scope() as session:
             cursor_row = _get_cursor(session, entity_type)
+            # Customer sync criteria (admin UI) gate the outbound mirror.
+            account_filter = AccountFilter(session, autotask)
             changes = await autotask.fetch_changes(entity_type, cursor=cursor_row.cursor)
             for entity in changes.entities:
                 try:
                     if entity_type is CanonicalEntityType.CONTACT:
+                        if not await account_filter.allows_contact(entity):
+                            continue  # outside the configured sync audience
                         await push_autotask_contact(session, at_contact=entity, ghl=ghl)
                     elif entity_type is CanonicalEntityType.DEAL:
                         await mirror_autotask_opportunity(
