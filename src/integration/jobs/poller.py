@@ -91,6 +91,9 @@ async def poll_once(*, autotask, ghl) -> dict:
                         )
                     processed += 1
                 except Exception:  # keep the sweep going; the item hits reconciliation later
+                    # ⚠️ A failed flush poisons the Postgres transaction — roll back
+                    # or every subsequent item in the page fails too.
+                    session.rollback()
                     log.exception(
                         "Poller: %s %s failed — continuing sweep",
                         entity_type.value,

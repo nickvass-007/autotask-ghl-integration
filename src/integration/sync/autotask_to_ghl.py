@@ -33,6 +33,16 @@ def _mapping_by_autotask(session: Session, autotask_id: str) -> EntityMapping | 
     return session.execute(stmt).scalar_one_or_none()
 
 
+def _mapping_by_ghl(session: Session, ghl_id: str) -> EntityMapping | None:
+    env = get_settings().environment
+    stmt = select(EntityMapping).where(
+        EntityMapping.environment == env,
+        EntityMapping.canonical_entity_type == CanonicalEntityType.CONTACT,
+        EntityMapping.ghl_id == ghl_id,
+    )
+    return session.execute(stmt).scalar_one_or_none()
+
+
 async def push_autotask_contact(
     session: Session,
     *,
@@ -62,6 +72,27 @@ async def push_autotask_contact(
         action, ref = "updated", link.ghl_id
     else:
         result = await ghl.create_contact(at_contact)
+        # The location's dedupe policy can resolve the create to an EXISTING GHL
+        # contact. If that contact is already mapped to a different Autotask id,
+        # this record is an Autotask-side duplicate — surface it, don't crash on
+        # the identity spine's unique constraint.
+        already = _mapping_by_ghl(session, result.external_id)
+        if already is not None:
+            record_transaction(
+                session,
+                correlation_id=correlation_id,
+                direction=Direction.AUTOTASK_TO_GHL,
+                operation=Operation.SKIP,
+                entity_type="contact",
+                entity_ref=result.external_id,
+                status=TransactionStatus.SKIPPED,
+                summary=(
+                    f"Autotask contact {autotask_id} resolves to GHL {result.external_id}, "
+                    f"already mapped to Autotask {already.autotask_id} — duplicate contact "
+                    "IN AUTOTASK; consider merging the Autotask records"
+                ),
+            )
+            return "skipped_duplicate"
         _link_mapping(session, ghl_id=result.external_id, autotask_id=autotask_id)
         action, ref = "created", result.external_id
 

@@ -63,6 +63,24 @@ async def test_account_filter_caches_and_gates(session):
     assert await f.allows_contact(orphan) is False
 
 
+async def test_autotask_duplicate_contacts_skip_not_crash(session):
+    """Two AT contacts resolving to the SAME GHL contact (AT-side duplicate):
+    the second must record a visible skip, not violate the identity spine."""
+    from integration.sync.autotask_to_ghl import push_autotask_contact
+
+    class DedupingGHL(FakeGHL):
+        async def create_contact(self, contact):
+            from integration.connectors.base import PushResult
+
+            return PushResult(ok=True, external_id="ghl-same-1", detail="deduped_existing:email")
+
+    ghl = DedupingGHL()
+    first = CanonicalContact(source_system=System.AUTOTASK, source_id="500", email="dup@x.co")
+    second = CanonicalContact(source_system=System.AUTOTASK, source_id="501", email="dup@x.co")
+    assert await push_autotask_contact(session, at_contact=first, ghl=ghl) == "created"
+    assert await push_autotask_contact(session, at_contact=second, ghl=ghl) == "skipped_duplicate"
+
+
 def test_canonical_contact_carries_active_flag():
     from integration.connectors.autotask import AutotaskConnector
 
