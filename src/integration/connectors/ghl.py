@@ -333,14 +333,53 @@ class GHLConnector(Connector):
     async def update_contact(self, external_id: str, changes: dict[str, object]) -> PushResult:
         # changes keyed by GHL field name (engine resolves direction); strip Nones.
         body = {k: v for k, v in changes.items() if v is not None}
-        resp = await request_json(
-            self._client,  # type: ignore[arg-type]
-            "PUT",
-            f"{GHL_API_BASE}/contacts/{external_id}",
-            headers=self._headers(),
-            json=body,
-        )
-        return PushResult(ok=True, external_id=external_id, detail=f"updated:{resp.status_code}")
+        dropped: list[str] = []
+        for _ in range(4):
+            if not body:
+                # every field was dropped as invalid/conflicting — nothing to apply
+                return PushResult(
+                    ok=True, external_id=external_id, detail=f"skipped_dropped:{','.join(dropped)}"
+                )
+            try:
+                resp = await request_json(
+                    self._client,  # type: ignore[arg-type]
+                    "PUT",
+                    f"{GHL_API_BASE}/contacts/{external_id}",
+                    headers=self._headers(),
+                    json=body,
+                )
+                detail = (
+                    f"updated:{resp.status_code}"
+                    if not dropped
+                    else f"updated_dropped:{','.join(dropped)}"
+                )
+                return PushResult(ok=True, external_id=external_id, detail=detail)
+            except httpx.HTTPStatusError as exc:
+                # Same salvage rules as create_contact: an invalid source value in
+                # the protected system must not wedge the mirror on every sweep.
+                if exc.response.status_code not in (400, 422):
+                    raise
+                try:
+                    data = exc.response.json()
+                except ValueError:
+                    raise exc from None
+                message = str(data.get("message", ""))
+                if "email must be an email" in message and "email" in body:
+                    body.pop("email")
+                    dropped.append("email(invalid)")
+                    continue
+                if "did not seem to be a phone number" in message and "phone" in body:
+                    body.pop("phone")
+                    dropped.append("phone(invalid)")
+                    continue
+                if "duplicated contacts" in message:
+                    field = (data.get("meta") or {}).get("matchingField")
+                    if field in body:
+                        body.pop(field)
+                        dropped.append(f"{field}(dup)")
+                        continue
+                raise
+        return PushResult(ok=False, detail="update retries exhausted")
 
     # ── Pipelines & Opportunities (Flow 2, Spec §10) ────────────────────────────
     async def get_pipelines(self) -> list[dict]:

@@ -113,6 +113,33 @@ async def test_invalid_phone_dropped_when_email_remains():
 
 
 @respx.mock
+async def test_update_salvages_invalid_fields():
+    route = respx.put(f"{GHL_API_BASE}/contacts/ghl-1").mock(
+        side_effect=[
+            httpx.Response(422, json={"message": ["email must be an email"], "statusCode": 422}),
+            httpx.Response(200, json={"contact": {"id": "ghl-1"}}),
+        ]
+    )
+    result = await _connector().update_contact(
+        "ghl-1", {"email": "not-an-email", "firstName": "Cathy"}
+    )
+    assert result.ok and result.detail == "updated_dropped:email(invalid)"
+    assert b'"email"' not in route.calls[1].request.content
+
+
+@respx.mock
+async def test_update_skips_when_every_field_invalid():
+    respx.put(f"{GHL_API_BASE}/contacts/ghl-1").mock(
+        return_value=httpx.Response(
+            400,
+            json={"statusCode": 400, "message": "The string supplied did not seem to be a phone number"},
+        )
+    )
+    result = await _connector().update_contact("ghl-1", {"phone": "TBA"})
+    assert result.ok and result.detail == "skipped_dropped:phone(invalid)"
+
+
+@respx.mock
 async def test_unrelated_400_still_raises():
     respx.post(f"{GHL_API_BASE}/contacts/").mock(
         return_value=httpx.Response(400, json={"statusCode": 400, "message": "bad payload"})
