@@ -1,0 +1,301 @@
+"""Interlinked Sync Control Centre — single-file portal UI.
+
+No build tooling: one HTML shell, hash routing, brand tokens as CSS variables
+(swap the :root block to rebrand — nothing brand-specific lives in components).
+"""
+
+PORTAL_HTML = r"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Interlinked Sync Control Centre</title>
+<style>
+:root{
+  /* ── Interlinked brand tokens (edit here to rebrand) ── */
+  --brand-primary:#2f6fed; --brand-secondary:#1b2a4a; --brand-accent:#37c2ff;
+  --brand-danger:#e5484d; --brand-success:#30a46c; --brand-warning:#f5a524;
+  --brand-bg:#0d1117; --brand-panel:#161b23; --brand-panel-2:#1c2330;
+  --brand-border:#2a3242; --brand-text:#e6e9ef; --brand-muted:#8b95a7;
+}
+*{box-sizing:border-box;margin:0}
+body{background:var(--brand-bg);color:var(--brand-text);font:14px/1.5 "Segoe UI",system-ui,sans-serif;display:flex;min-height:100vh}
+aside{width:220px;background:var(--brand-secondary);padding:16px 0;flex-shrink:0;display:flex;flex-direction:column}
+.logo{padding:0 16px 14px;border-bottom:1px solid rgba(255,255,255,.12);margin-bottom:10px}
+.logo b{font-size:17px;letter-spacing:.06em}
+.logo span{display:block;font-size:11px;color:var(--brand-accent);letter-spacing:.14em;margin-top:2px}
+nav a{display:block;padding:9px 18px;color:#cdd6e4;text-decoration:none;font-weight:500;border-left:3px solid transparent}
+nav a.active,nav a:hover{background:rgba(255,255,255,.06);color:#fff;border-left-color:var(--brand-accent)}
+main{flex:1;padding:20px 26px;min-width:0}
+.banner{padding:9px 16px;border-radius:8px;font-weight:700;margin-bottom:16px;letter-spacing:.03em}
+.banner.prod{background:var(--brand-danger);color:#fff}
+.banner.sandbox{background:var(--brand-success);color:#fff}
+.card{background:var(--brand-panel);border:1px solid var(--brand-border);border-radius:10px;padding:16px;margin-bottom:16px}
+h2{font-size:15px;margin-bottom:10px} h3{font-size:13px;margin:12px 0 6px;color:var(--brand-muted)}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th,td{text-align:left;padding:7px 9px;border-bottom:1px solid var(--brand-border);vertical-align:top}
+th{color:var(--brand-muted);font-weight:600;white-space:nowrap}
+tr:hover td{background:var(--brand-panel-2)}
+.muted{color:var(--brand-muted)} .right{text-align:right}
+.pill{display:inline-block;padding:1px 9px;border-radius:99px;font-size:11.5px;font-weight:700;white-space:nowrap}
+.pill.ok,.pill.success,.pill.succeeded,.pill.approved,.pill.enabled,.pill.healthy{background:rgba(48,164,108,.18);color:var(--brand-success)}
+.pill.warn,.pill.pending,.pill.review_required,.pill.dry_run_required,.pill.paused,.pill.skipped,.pill.conflict{background:rgba(245,165,36,.16);color:var(--brand-warning)}
+.pill.bad,.pill.failed,.pill.error,.pill.blocked,.pill.cancelled,.pill.disabled{background:rgba(229,72,77,.16);color:var(--brand-danger)}
+.pill.info,.pill.running,.pill.dry_run,.pill.live,.pill.scheduled,.pill.manual{background:rgba(47,111,237,.18);color:var(--brand-accent)}
+.btn{border:1px solid var(--brand-border);background:var(--brand-panel-2);color:var(--brand-text);border-radius:7px;padding:6px 13px;cursor:pointer;font-weight:600;font-size:13px}
+.btn:hover{border-color:var(--brand-primary)}
+.btn.primary{background:var(--brand-primary);border-color:var(--brand-primary);color:#fff}
+.btn.danger{background:var(--brand-danger);border-color:var(--brand-danger);color:#fff}
+.btn.success{background:var(--brand-success);border-color:var(--brand-success);color:#fff}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+input,select,textarea{border:1px solid var(--brand-border);border-radius:7px;padding:6px 9px;background:var(--brand-bg);color:var(--brand-text);font:inherit}
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px}
+.stat{background:var(--brand-panel-2);border:1px solid var(--brand-border);border-radius:9px;padding:12px}
+.stat b{font-size:22px;display:block}
+.scroll{overflow-x:auto}
+a{color:var(--brand-accent)} pre{background:var(--brand-bg);border-radius:7px;padding:9px;overflow-x:auto;font-size:12px}
+#toast{position:fixed;bottom:18px;right:18px;background:var(--brand-panel-2);border:1px solid var(--brand-border);border-radius:9px;padding:10px 16px;display:none;max-width:420px}
+</style>
+</head>
+<body>
+<aside>
+  <div class="logo"><b>INTERLINKED</b><span>SYNC CONTROL CENTRE</span></div>
+  <nav id="nav">
+    <a href="#dashboard">Dashboard</a><a href="#customers">Customers</a>
+    <a href="#contacts">Contacts</a><a href="#profiles">Sync Profiles</a>
+    <a href="#jobs">Sync Jobs</a><a href="#approvals">Approvals</a>
+    <a href="#logs">Logs</a><a href="#settings">Settings</a>
+  </nav>
+  <div style="margin-top:auto;padding:12px 16px" class="muted">
+    <label style="font-size:11px">OPS TOKEN</label><br>
+    <input type="password" id="token" size="14" style="margin:4px 0">
+    <button class="btn" onclick="saveToken()">Set</button>
+  </div>
+</aside>
+<main><div id="banner" class="banner">…</div><div id="page"></div></main>
+<div id="toast"></div>
+<script>
+const $=s=>document.querySelector(s);
+const esc=s=>String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const token=()=>localStorage.getItem("opsToken")||"";
+function saveToken(){localStorage.setItem("opsToken",$("#token").value.trim());route();}
+function toast(msg){const t=$("#toast");t.textContent=msg;t.style.display="block";setTimeout(()=>t.style.display="none",4200);}
+async function api(path,opts={}){
+  const r=await fetch(path,{...opts,headers:{"Content-Type":"application/json","x-admin-token":token(),...(opts.headers||{})}});
+  if(!r.ok){const d=await r.json().catch(()=>({detail:r.status}));throw new Error(d.detail||r.status);}
+  return r.json();
+}
+const fmtDt=s=>s?s.replace("T"," ").slice(0,16):"—";
+const pill=(v)=>`<span class="pill ${esc(String(v||"").toLowerCase())}">${esc(v??"—")}</span>`;
+let AT_BASE="https://ww29.autotask.net";
+const atLink=id=>id?`<a target="_blank" href="${AT_BASE}/Mvc/CRM/AccountDetail.mvc?accountId=${esc(id)}">${esc(id)}</a>`:"—";
+
+async function banner(){try{const d=await api("/portal/api/overview");
+  const b=$("#banner");b.className="banner "+(d.is_production?"prod":"sandbox");
+  b.textContent=(d.is_production?"⚠ PRODUCTION — live Autotask data":"SANDBOX")+"  ·  "+d.deployment_label;
+  return d;}catch(e){$("#banner").textContent="Auth needed — set the ops token (bottom left). "+e.message;return null;}}
+
+// ── Pages ──
+async function pageDashboard(){const d=await api("/portal/api/overview");const c=d.counts;
+  $("#page").innerHTML=`
+  <div class="grid">
+    <div class="stat"><b>${c.contacts_linked}</b>Contacts linked</div>
+    <div class="stat"><b>${c.companies_linked}</b>Companies linked</div>
+    <div class="stat"><b>${c.profiles}</b>Sync profiles</div>
+    <div class="stat"><b>${c.pending_approvals}</b>Pending approvals</div>
+    <div class="stat"><b>${c.jobs_running}</b>Jobs running</div>
+  </div>
+  <div class="card"><h2>Recent jobs</h2><div class="scroll"><table>
+    <tr><th>#</th><th>Profile</th><th>Kind</th><th>Trigger</th><th>Status</th><th>Started</th><th>Duration</th><th>Result</th></tr>
+    ${d.recent_jobs.map(j=>`<tr onclick="location.hash='job/${j.id}'" style="cursor:pointer">
+      <td>${j.id}</td><td>${j.profile_id??"—"}</td><td>${pill(j.kind)}</td><td>${pill(j.trigger)}</td>
+      <td>${pill(j.status)}</td><td>${fmtDt(j.started_at)}</td><td>${j.duration_s??"—"}s</td>
+      <td class="muted">${esc(JSON.stringify(j.summary||{}).slice(0,80))}</td></tr>`).join("")}
+  </table></div></div>`;}
+
+async function pageCustomers(){const profiles=(await api("/portal/api/profiles")).profiles;
+  const sel=location.hash.split("?p=")[1]||"";
+  const d=await api("/portal/api/customers"+(sel?`?profile_id=${sel}`:""));AT_BASE=d.autotask_web_base;
+  $("#page").innerHTML=`<div class="card"><div class="row"><h2>Customers</h2>
+    <select id="cprof" onchange="location.hash='customers?p='+this.value">
+      <option value="">Synced companies (linked)</option>
+      ${profiles.map(p=>`<option value="${p.id}" ${String(p.id)===sel?"selected":""}>Dry-run: ${esc(p.name)}</option>`).join("")}
+    </select><span class="muted">source: ${esc(d.source)}</span></div>
+    <div class="scroll"><table><tr><th>Autotask ID</th><th>Name</th><th>Type</th><th>Classification</th><th>Status</th></tr>
+    ${d.customers.map(c=>`<tr><td>${atLink(c.id)}</td><td>${esc(c.name||"—")}</td><td>${esc(c.type||"—")}</td>
+      <td>${esc(c.classification||"—")}</td><td>${c.linked?pill("linked"):pill("new")}${c.ghl_id?` <span class="muted">GHL ${esc(c.ghl_id)}</span>`:""}</td></tr>`).join("")||"<tr><td colspan=5 class=muted>No rows — run a dry-run on a profile or sync companies.</td></tr>"}
+    </table></div></div>`;}
+
+async function pageContacts(){const d=await api("/portal/api/contacts");AT_BASE=d.autotask_web_base;
+  $("#page").innerHTML=`<div class="card"><h2>Synced contacts <span class="muted">(${d.total} linked)</span></h2>
+  <div class="scroll"><table><tr><th>Autotask ID</th><th>GHL ID</th><th>Last synced</th></tr>
+  ${d.contacts.map(c=>`<tr><td><a target="_blank" href="${AT_BASE}/Mvc/CRM/ContactDetail.mvc?contactId=${esc(c.autotask_id)}">${esc(c.autotask_id)}</a></td>
+    <td class="muted">${esc(c.ghl_id)}</td><td>${fmtDt(c.last_synced_at)}</td></tr>`).join("")}
+  </table></div></div>`;}
+
+const RULE_FIELDS={companyType:"Customer type",classification:"Classification",isActive:"Account active",ownerResourceID:"Account owner",marketSegmentID:"Market segment"};
+function ruleRows(criteria){return (criteria?.rules||[]).map(r=>`${RULE_FIELDS[r.field]||r.field} ${r.operator} ${r.value}`).join(" AND ")||"(no rules — everything matches)";}
+
+async function pageProfiles(){const d=await api("/portal/api/profiles");
+  $("#page").innerHTML=`<div class="card"><div class="row"><h2>Sync Profiles</h2>
+    <button class="btn primary" onclick="createProfile()">+ New profile</button></div>
+    <div class="scroll"><table>
+    <tr><th>Profile</th><th>Type</th><th>Criteria</th><th>Schedule</th><th>Last run</th><th>Next run</th><th>Status</th><th></th></tr>
+    ${d.profiles.map(p=>{
+      const st=!p.enabled?"disabled":p.schedule_paused?"paused":p.review_state;
+      return `<tr><td><a href="#profile/${p.id}"><b>${esc(p.name)}</b></a><br><span class="muted">${esc(p.description)}</span></td>
+      <td>${esc(p.sync_type)}</td><td class="muted">${esc(ruleRows(p.criteria))}</td>
+      <td>${p.schedule_enabled?esc(p.schedule_type)+(p.schedule_paused?" (paused)":""):"manual"}</td>
+      <td>${fmtDt(p.last_run_at)}</td><td>${fmtDt(p.next_run_at)}</td><td>${pill(st)}</td>
+      <td><a href="#profile/${p.id}">open</a></td></tr>`;}).join("")||"<tr><td colspan=8 class=muted>No profiles yet — create one to define a sync audience.</td></tr>"}
+    </table></div></div>`;}
+
+async function createProfile(){const name=prompt("Profile name (e.g. Active Managed Customers → GHL):");if(!name)return;
+  const p=await api("/portal/api/profiles",{method:"POST",body:JSON.stringify({name,criteria:{rules:[{field:"isActive",operator:"eq",value:"true"},{field:"companyType",operator:"eq",value:"1"}]}})});
+  location.hash="profile/"+p.id;}
+
+function breakdownTable(rows){return `<div class="scroll"><table><tr><th>Customer type</th><th>Classification</th><th class=right>Count</th><th>Action</th></tr>
+  ${(rows||[]).map(r=>`<tr><td>${esc(r.type)}</td><td>${esc(r.classification)}</td><td class=right>${r.count}</td><td>${pill(r.action==="Sync"?"ok":"skipped")} ${esc(r.action)}</td></tr>`).join("")}</table></div>`;}
+
+async function pageProfile(id){const p=await api(`/portal/api/profiles/${id}`);const s=p.last_dry_run_summary;
+  const st=!p.enabled?"disabled":p.schedule_paused?"paused":p.review_state;
+  const nextKind=p.blockers.length? (p.schedule_enabled?"Dry run only (blocked from live: "+p.blockers.join("; ")+")":"Blocked: "+p.blockers.join("; ")) : (p.schedule_enabled?"LIVE sync":"Manual only");
+  $("#page").innerHTML=`
+  <div class="card"><div class="row"><h2>${esc(p.name)}</h2>${pill(st)}
+    <span class="muted">${esc(p.description)}</span></div>
+    <div class="row" style="margin:10px 0">
+      <button class="btn" onclick="dryRun(${p.id})">▶ Run dry-run</button>
+      <button class="btn success" ${p.blockers.length?"disabled title='"+esc(p.blockers.join("; "))+"'":""} onclick="liveRun(${p.id})">⚡ Run live sync now</button>
+      <button class="btn primary" ${p.review_state==="pending"||p.review_state==="review_required"?"":"disabled"} onclick="approveProfile(${p.id})">✔ Approve for live</button>
+      <button class="btn" onclick="editCriteria(${p.id})">Edit criteria</button>
+      <button class="btn" onclick="editSchedule(${p.id})">Edit schedule</button>
+      <button class="btn" onclick="api('/portal/api/profiles/${p.id}/duplicate',{method:'POST'}).then(x=>location.hash='profile/'+x.id)">Duplicate</button>
+      <button class="btn danger" onclick="if(confirm('Delete profile?'))api('/portal/api/profiles/${p.id}',{method:'DELETE'}).then(()=>location.hash='profiles')">Delete</button>
+    </div>
+    ${p.review_reason?`<div class="pill warn" style="margin-bottom:8px">⚠ ${esc(p.review_reason)}</div>`:""}
+    <div class="grid">
+      <div class="stat"><b>${esc(p.review_state)}</b>Review state</div>
+      <div class="stat"><b>${p.dry_run_current?"current":"stale"}</b>Dry-run vs criteria</div>
+      <div class="stat"><b>${p.schedule_enabled?esc(p.schedule_type):"manual"}</b>Schedule ${p.schedule_paused?"(paused)":""}</div>
+      <div class="stat"><b>${fmtDt(p.next_run_at)}</b>Next run → ${esc(nextKind)}</div>
+    </div>
+    <h3>Criteria</h3><div class="muted">${esc(ruleRows(p.criteria))}</div></div>
+  ${s?`<div class="card"><h2>Latest dry-run (Would Sync)</h2>
+    <div class="grid">
+      <div class="stat"><b>${s.customers_matched}</b>Matching customers</div>
+      <div class="stat"><b>${s.customers_linked}</b>Already linked</div>
+      <div class="stat"><b>${s.customers_new}</b>New to create/link</div>
+      <div class="stat"><b>${s.customers_excluded}</b>Excluded</div>
+      <div class="stat"><b>${s.contacts_matched}</b>Contacts matched</div>
+      <div class="stat"><b>${s.warnings}</b>Warnings</div>
+      <div class="stat"><b>${s.conflicts}</b>Conflicts</div>
+    </div>
+    <h3>What would sync, by customer type</h3>${breakdownTable(s.type_breakdown)}
+    <h3>Matched customers (first ${Math.min((s.matched_preview||[]).length,500)}) — <a href="#customers?p=${p.id}">full view</a></h3>
+    <h3>Excluded examples</h3><div class="scroll"><table><tr><th>ID</th><th>Name</th><th>Why excluded</th></tr>
+    ${(s.excluded_examples||[]).map(e=>`<tr><td>${atLink(e.id)}</td><td>${esc(e.name||"—")}</td><td class="muted">${esc((e.reasons||[]).join(", ")||"—")}</td></tr>`).join("")}</table></div>
+    <div class="row" style="margin-top:8px"><button class="btn" onclick="exportDryRun(${p.id})">Export dry-run report</button></div>
+  </div>`:`<div class="card muted">No dry-run yet — run one to preview what this profile would sync.</div>`}
+  <div class="card"><h2>Run history (Has Synced)</h2><div class="scroll"><table>
+    <tr><th>#</th><th>Kind</th><th>Trigger</th><th>By</th><th>Status</th><th>Started</th><th>Duration</th><th>Result</th></tr>
+    ${p.jobs.map(j=>`<tr onclick="location.hash='job/${j.id}'" style="cursor:pointer"><td>${j.id}</td><td>${pill(j.kind)}</td>
+      <td>${pill(j.trigger)}</td><td>${esc(j.started_by||"—")}</td><td>${pill(j.status)}</td>
+      <td>${fmtDt(j.started_at)}</td><td>${j.duration_s??"—"}s</td>
+      <td class="muted">${esc(JSON.stringify(j.summary||{}).slice(0,90))}</td></tr>`).join("")||"<tr><td colspan=8 class=muted>Never run.</td></tr>"}
+  </table></div></div>`;}
+
+async function dryRun(id){await api(`/portal/api/profiles/${id}/dry-run`,{method:"POST"});toast("Dry-run started — refresh in a few seconds.");setTimeout(()=>route(),6000);}
+async function liveRun(id){if(!confirm("Run LIVE sync now? Writes to GHL."))return;
+  try{await api(`/portal/api/profiles/${id}/run`,{method:"POST"});toast("Live sync started.");setTimeout(()=>route(),4000);}catch(e){toast("Blocked: "+e.message);}}
+async function approveProfile(id){try{await api(`/portal/api/profiles/${id}/approve`,{method:"POST",body:"{}"});toast("Approved for live sync.");route();}catch(e){toast(e.message);}}
+async function editCriteria(id){const p=await api(`/portal/api/profiles/${id}`);
+  const cur=JSON.stringify(p.criteria,null,1);
+  const txt=prompt('Criteria JSON — rules AND together. Fields: companyType, classification, isActive, ownerResourceID, marketSegmentID. Ops: eq, ne, in, not_in.',cur);
+  if(!txt)return;try{const criteria=JSON.parse(txt);
+    await api(`/portal/api/profiles/${id}`,{method:"PUT",body:JSON.stringify({criteria})});
+    toast("Criteria updated — a new dry-run is now required.");route();}catch(e){toast("Invalid: "+e.message);}}
+async function editSchedule(id){
+  const type=prompt("Schedule type: manual | preset | interval | daily | weekdays | weekly | once","preset");if(type===null)return;
+  let config=null;
+  if(type==="preset")config={preset:prompt("Preset: weekday_7am | weekday_6pm | saturday_9am | sunday_9am | every_4h_business | overnight | hourly | daily_7am","weekday_7am")};
+  else if(type==="interval")config={every_hours:Number(prompt("Every how many hours?","4"))};
+  else if(["daily","weekdays","weekly"].includes(type))config={time:prompt("Time of day (HH:MM, Sydney time)","07:00"),days:type==="weekly"?JSON.parse(prompt("Days array (0=Mon…6=Sun)","[0,1,2,3,4]")):undefined};
+  else if(type==="once")config={at:prompt("Run once at (YYYY-MM-DDTHH:MM, Sydney)","")};
+  const enabled=type!=="manual"&&confirm("Enable this schedule now?");
+  await api(`/portal/api/profiles/${id}/schedule`,{method:"POST",body:JSON.stringify({schedule_type:type,schedule_config:config,schedule_enabled:enabled,schedule_paused:false})});
+  toast("Schedule saved.");route();}
+async function exportDryRun(id){const p=await api(`/portal/api/profiles/${id}`);
+  const blob=new Blob([JSON.stringify({profile:p.name,summary:p.last_dry_run_summary,exported:new Date().toISOString()},null,2)],{type:"application/json"});
+  const a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download=`dryrun-${p.name.replace(/\W+/g,"-")}.json`;a.click();}
+
+async function pageJobs(){const d=await api("/portal/api/jobs");
+  $("#page").innerHTML=`<div class="card"><h2>Sync Jobs</h2><div class="scroll"><table>
+  <tr><th>#</th><th>Profile</th><th>Kind</th><th>Trigger</th><th>By</th><th>Status</th><th>Started</th><th>Duration</th><th></th></tr>
+  ${d.jobs.map(j=>`<tr><td>${j.id}</td><td>${j.profile_id??"—"}</td><td>${pill(j.kind)}</td><td>${pill(j.trigger)}</td>
+    <td>${esc(j.started_by||"—")}</td><td>${pill(j.status)}</td><td>${fmtDt(j.started_at)}</td><td>${j.duration_s??"—"}s</td>
+    <td><a href="#job/${j.id}">logs</a>${j.status==="running"?` <button class="btn danger" onclick="cancelJob(${j.id})">Stop</button>`:""}</td></tr>`).join("")}
+  </table></div></div>`;}
+async function cancelJob(id){await api(`/portal/api/jobs/${id}/cancel`,{method:"POST"});toast("Cancel requested.");setTimeout(()=>route(),2500);}
+
+let jobTimer=null;
+async function pageJob(id){const j=await api(`/portal/api/jobs/${id}`);
+  $("#page").innerHTML=`<div class="card"><div class="row"><h2>Job #${j.id}</h2>${pill(j.kind)}${pill(j.status)}
+    ${j.status==="running"?`<button class="btn danger" onclick="cancelJob(${j.id})">Stop job</button>`:""}
+    <a href="#profile/${j.profile_id}">profile</a></div>
+    <div class="grid"><div class="stat"><b>${esc(j.trigger)}</b>Trigger</div>
+      <div class="stat"><b>${esc(j.started_by||"—")}</b>Started by</div>
+      <div class="stat"><b>${fmtDt(j.started_at)}</b>Started</div>
+      <div class="stat"><b>${j.duration_s??"…"}s</b>Duration</div></div>
+    ${j.error?`<pre style="color:var(--brand-danger)">${esc(j.error)}</pre>`:""}
+    <h3>Result</h3><pre>${esc(JSON.stringify(j.summary||{},null,2))}</pre></div>
+  <div class="card"><h2>Log (${j.logs.length} entries${j.status==="running"?", live":""})</h2>
+    <div class="scroll"><table><tr><th>Time</th><th>Op</th><th>Status</th><th>Entity</th><th>Summary</th></tr>
+    ${j.logs.map(l=>`<tr><td>${fmtDt(l.timestamp)}</td><td>${esc(l.operation)}</td><td>${pill(l.status)}</td>
+      <td class="muted">${esc(l.entity_ref||"—")}</td><td>${esc(l.summary)}</td></tr>`).join("")}
+    </table></div></div>`;
+  if(j.status==="running"){clearTimeout(jobTimer);jobTimer=setTimeout(()=>{if(location.hash===`#job/${id}`)pageJob(id);},3000);}}
+
+async function pageApprovals(){const d=await api("/admin/data");
+  $("#page").innerHTML=`<div class="card"><h2>Pending approvals (${d.approvals.length})</h2>
+  ${d.approvals.map(a=>`<div class="card" style="margin:8px 0"><div class="row">#${a.id} ${pill(a.severity)} <b>${esc(a.type)}</b></div>
+    <div>${esc(a.reason)}</div><div class="muted">GHL ${esc(a.ghl_id||"—")} · AT ${esc(a.autotask_id||"—")}</div>
+    <details><summary class="muted">proposed change</summary><pre>${esc(JSON.stringify(a.proposed_change,null,2))}</pre></details>
+    <div class="row" style="margin-top:6px"><input id="ch-${a.id}" placeholder="chosen id (optional)" size="16">
+      <button class="btn success" onclick="decide(${a.id},'approve')">Approve</button>
+      <button class="btn danger" onclick="decide(${a.id},'reject')">Reject</button></div></div>`).join("")||"<span class=muted>Queue is empty.</span>"}
+  </div>`;}
+async function decide(id,decision){const chosen=$(`#ch-${id}`).value.trim();
+  const body={decision,decided_by:"portal-operator"};if(chosen)body.chosen_id=chosen;
+  try{const r=await fetch(`/approvals/${id}/decide`,{method:"POST",headers:{"Content-Type":"application/json","x-approval-token":token()},body:JSON.stringify(body)});
+  const out=await r.json();if(!r.ok)throw new Error(out.detail);toast(`#${id} → ${out.action}`);route();}catch(e){toast("Failed: "+e.message);}}
+
+async function pageLogs(){const d=await api("/portal/api/logs");
+  $("#page").innerHTML=`<div class="card"><h2>Transaction log</h2><div class="scroll"><table>
+  <tr><th>Time</th><th>Dir</th><th>Op</th><th>Status</th><th>Entity</th><th>Summary</th></tr>
+  ${d.logs.map(l=>`<tr><td>${fmtDt(l.timestamp)}</td><td class="muted">${esc(l.direction)}</td><td>${esc(l.operation)}</td>
+    <td>${pill(l.status)}</td><td class="muted">${esc(l.entity_type)} ${esc(l.entity_ref||"")}</td><td>${esc(l.summary)}</td></tr>`).join("")}
+  </table></div></div>`;}
+
+async function pageSettings(){const d=await api("/portal/api/settings");const s=d.settings;
+  const fields=Object.entries(s).map(([k,v])=>`<tr><td>${esc(k)}</td><td><input id="set-${esc(k)}" value="${esc(v)}" size="34"></td></tr>`).join("");
+  $("#page").innerHTML=`<div class="card"><h2>Settings</h2><div class="scroll"><table><tr><th>Key</th><th>Value</th></tr>${fields}</table></div>
+  <div class="row" style="margin-top:10px"><button class="btn primary" onclick="saveSettings(${JSON.stringify(Object.keys(s)).replace(/"/g,"&quot;")})">Save settings</button>
+  <span class="muted">Timezone default Australia/Sydney · notification keys are placeholders (no notification infra yet)</span></div></div>`;}
+async function saveSettings(keys){const settings={};keys.forEach(k=>settings[k]=$(`#set-${k}`).value);
+  await api("/portal/api/settings",{method:"PUT",body:JSON.stringify({settings})});toast("Settings saved.");}
+
+// ── Router ──
+const routes={dashboard:pageDashboard,customers:pageCustomers,contacts:pageContacts,profiles:pageProfiles,jobs:pageJobs,approvals:pageApprovals,logs:pageLogs,settings:pageSettings};
+async function route(){await banner();const h=(location.hash||"#dashboard").slice(1);
+  document.querySelectorAll("#nav a").forEach(a=>a.classList.toggle("active",a.getAttribute("href")==="#"+h.split("/")[0].split("?")[0]));
+  try{
+    if(h.startsWith("profile/"))return await pageProfile(Number(h.split("/")[1]));
+    if(h.startsWith("job/"))return await pageJob(Number(h.split("/")[1]));
+    await (routes[h.split("?")[0]]||pageDashboard)();
+  }catch(e){$("#page").innerHTML=`<div class="card"><span class="pill bad">error</span> ${esc(e.message)}</div>`;}}
+window.addEventListener("hashchange",route);
+$("#token").value=token();route();
+</script>
+</body>
+</html>"""

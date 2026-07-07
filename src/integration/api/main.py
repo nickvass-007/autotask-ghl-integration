@@ -37,8 +37,10 @@ from ..sync import contacts as contacts_flow
 from ..sync import deals as deals_flow
 from ..sync.approvals import get_approval, list_pending
 from ..teams.bot import handle_command
+from ..jobs.scheduler import run_scheduler
 from .admin import router as admin_router
 from .deps import get_autotask, get_ghl, set_ghl_token
+from .portal import router as portal_router
 
 log = get_logger(__name__)
 
@@ -62,19 +64,26 @@ async def lifespan(app: FastAPI):
         log.warning("Stage map not synced to DB: %s", exc)
 
     stop = asyncio.Event()
-    poller_task: asyncio.Task | None = None
+    tasks: list[asyncio.Task] = []
     if settings.enable_poller:
-        poller_task = asyncio.create_task(
+        tasks.append(asyncio.create_task(
             run_poller(autotask_factory=get_autotask, ghl_factory=get_ghl, stop=stop)
-        )
+        ))
+    if settings.enable_scheduler:
+        # Safe by default: only fires profiles an operator has scheduled, and a
+        # schedule can never go live without dry-run + approval (portal §6).
+        tasks.append(asyncio.create_task(
+            run_scheduler(autotask_factory=get_autotask, ghl_factory=get_ghl, stop=stop)
+        ))
     yield
-    if poller_task is not None:
-        stop.set()
-        poller_task.cancel()
+    stop.set()
+    for task in tasks:
+        task.cancel()
 
 
 app = FastAPI(title="Autotask ⇄ GoHighLevel Integration", version="0.1.0", lifespan=lifespan)
 app.include_router(admin_router)
+app.include_router(portal_router)
 
 
 @app.get("/health")

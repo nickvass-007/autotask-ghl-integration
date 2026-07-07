@@ -81,6 +81,9 @@ class Settings(BaseSettings):
     # Locally it runs as a background task (scripts/run_poller.py or ENABLE_POLLER);
     # in production it moves to Timer-triggered Functions (Spec §12.2).
     enable_poller: bool = False
+    # Portal scheduler for saved sync profiles. Safe-on: profiles only run if an
+    # operator scheduled them, and live runs require dry-run + approval gates.
+    enable_scheduler: bool = True
 
     # ── Stage C — conversion handoff (Spec §8.2) ──
     # The stamp applied to a GHL contact once its record lives in Autotask.

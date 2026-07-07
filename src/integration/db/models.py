@@ -315,6 +315,105 @@ class SyncCriteria(Base):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Portal: saved sync profiles, job records, dry-run snapshots, settings.
+# A PROFILE is a saved criteria+schedule configuration; every execution (dry or
+# live, manual or scheduled) is a JOB row; every dry-run stores a SNAPSHOT so
+# the safety rules can compare what changed between runs.
+# ─────────────────────────────────────────────────────────────────────────────
+class SyncProfile(Base):
+    __tablename__ = "sync_profiles"
+
+    id: Mapped[int] = id_column()
+    environment: Mapped[str] = mapped_column(_enum(Environment, "sp_environment"), nullable=False)
+    name: Mapped[str] = mapped_column(String(160), nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    sync_type: Mapped[str] = mapped_column(String(40), nullable=False, default="contacts")
+    criteria_json: Mapped[dict] = mapped_column(JSONColumn, nullable=False, default=dict)
+    criteria_hash: Mapped[str | None] = mapped_column(String(64))
+    selected_customer_ids: Mapped[dict | None] = mapped_column(JSONColumn)  # explicit include list
+    selected_contact_ids: Mapped[dict | None] = mapped_column(JSONColumn)
+    dry_run_required: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    requires_approval_before_live_sync: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True
+    )
+    approved_at: Mapped[datetime | None] = mapped_column(TimestampTZ)
+    approved_by: Mapped[str | None] = mapped_column(String(120))
+    # pending | dry_run_required | review_required | approved
+    review_state: Mapped[str] = mapped_column(String(30), nullable=False, default="dry_run_required")
+    review_reason: Mapped[str | None] = mapped_column(Text)
+    schedule_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    schedule_paused: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    schedule_type: Mapped[str] = mapped_column(String(30), nullable=False, default="manual")
+    schedule_config: Mapped[dict | None] = mapped_column(JSONColumn)
+    last_dry_run_job_id: Mapped[int | None] = mapped_column(Integer)
+    last_live_sync_job_id: Mapped[int | None] = mapped_column(Integer)
+    last_run_at: Mapped[datetime | None] = mapped_column(TimestampTZ)
+    next_run_at: Mapped[datetime | None] = mapped_column(TimestampTZ)
+    created_by: Mapped[str | None] = mapped_column(String(120))
+    updated_by: Mapped[str | None] = mapped_column(String(120))
+    created_at: Mapped[datetime] = created_at_column()
+    updated_at: Mapped[datetime] = updated_at_column()
+
+    __table_args__ = (UniqueConstraint("environment", "name", name="uq_sync_profiles_name"),)
+
+
+class SyncJob(Base):
+    __tablename__ = "sync_jobs"
+
+    id: Mapped[int] = id_column()
+    environment: Mapped[str] = mapped_column(_enum(Environment, "sj_environment"), nullable=False)
+    profile_id: Mapped[int | None] = mapped_column(Integer)  # null = ad-hoc job
+    kind: Mapped[str] = mapped_column(String(20), nullable=False)  # dry_run | live
+    trigger: Mapped[str] = mapped_column(String(20), nullable=False)  # manual|scheduled|retry|system
+    started_by: Mapped[str | None] = mapped_column(String(120))
+    scheduled_for: Mapped[datetime | None] = mapped_column(TimestampTZ)
+    started_at: Mapped[datetime | None] = mapped_column(TimestampTZ)
+    ended_at: Mapped[datetime | None] = mapped_column(TimestampTZ)
+    # queued | running | succeeded | failed | cancelled
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="queued")
+    cancel_requested: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    correlation_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    summary_json: Mapped[dict | None] = mapped_column(JSONColumn)
+    error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = created_at_column()
+
+    __table_args__ = (Index("ix_sync_jobs_profile", "environment", "profile_id", "created_at"),)
+
+
+class SyncProfileSnapshot(Base):
+    __tablename__ = "sync_profile_snapshots"
+
+    id: Mapped[int] = id_column()
+    environment: Mapped[str] = mapped_column(_enum(Environment, "sps_environment"), nullable=False)
+    profile_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    job_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    criteria_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    criteria_snapshot: Mapped[dict] = mapped_column(JSONColumn, nullable=False)
+    matched_customer_ids: Mapped[dict] = mapped_column(JSONColumn, nullable=False)   # {"ids": []}
+    matched_contact_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    excluded_ids: Mapped[dict | None] = mapped_column(JSONColumn)
+    summary_json: Mapped[dict] = mapped_column(JSONColumn, nullable=False)
+    warnings: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    conflicts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = created_at_column()
+
+    __table_args__ = (Index("ix_sps_profile", "environment", "profile_id", "created_at"),)
+
+
+class PortalSetting(Base):
+    __tablename__ = "portal_settings"
+
+    id: Mapped[int] = id_column()
+    environment: Mapped[str] = mapped_column(_enum(Environment, "ps_environment"), nullable=False)
+    key: Mapped[str] = mapped_column(String(80), nullable=False)
+    value: Mapped[str] = mapped_column(Text, nullable=False)
+    updated_at: Mapped[datetime] = updated_at_column()
+
+    __table_args__ = (UniqueConstraint("environment", "key", name="uq_portal_settings"),)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # oauth_token_store — persisted OAuth tokens for LOCAL DEV so the GHL grant
 # survives API restarts (GHL rotates the refresh token on every refresh; losing
 # it forces a manual re-auth). ⚠️ In production this moves to Azure Key Vault
