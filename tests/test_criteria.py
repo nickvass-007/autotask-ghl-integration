@@ -63,6 +63,16 @@ async def test_account_filter_caches_and_gates(session):
     assert await f.allows_contact(orphan) is False
 
 
+def test_canonical_contact_carries_active_flag():
+    from integration.connectors.autotask import AutotaskConnector
+
+    connector = AutotaskConnector(Environment.SANDBOX)
+    active = connector._to_canonical({"id": 1, "emailAddress": "a@x.co", "isActive": 1})
+    inactive = connector._to_canonical({"id": 2, "emailAddress": "b@x.co", "isActive": 0})
+    assert active.extra["is_active"] is True
+    assert inactive.extra["is_active"] is False
+
+
 async def test_classification_sweep_respects_criteria(session):
     autotask = FakeAutotask()
     autotask.contacts["500"] = CanonicalContact(

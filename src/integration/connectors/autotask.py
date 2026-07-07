@@ -140,6 +140,9 @@ class AutotaskConnector(Connector):
             if value is not None:
                 setattr(contact, rule.canonical, value)
         contact.company_id = str(item["companyID"]) if item.get("companyID") is not None else None
+        # Carried in the extra bag (not a synced field): lets the outbound sweep
+        # skip INACTIVE contacts even when their Account passes the criteria.
+        contact.extra["is_active"] = bool(item.get("isActive", 1))
         return contact
 
     def _contact_payload(self, contact: CanonicalContact) -> dict:

@@ -76,6 +76,8 @@ async def poll_once(*, autotask, ghl) -> dict:
             for entity in changes.entities:
                 try:
                     if entity_type is CanonicalEntityType.CONTACT:
+                        if not entity.extra.get("is_active", True):
+                            continue  # inactive CONTACT — never mirrored outbound
                         if not await account_filter.allows_contact(entity):
                             continue  # outside the configured sync audience
                         await push_autotask_contact(session, at_contact=entity, ghl=ghl)
