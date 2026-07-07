@@ -1,0 +1,71 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# canonical.Deal field mapping — Autotask Opportunity ⇄ GHL Opportunity
+# (Spec §10.4). Same shape as contacts.mapping.yaml: nothing hardcoded in Python.
+#
+# Direction rules (Spec §10.2):
+#   - Autotask -> GHL is free-flowing (AT wins).
+#   - GHL -> Autotask is GATED: amount changes on a populated field, closed-state
+#     changes, and backwards stage moves ALWAYS raise approvals.
+# ─────────────────────────────────────────────────────────────────────────────
+
+defaults:
+  auto_apply_additive: true
+  conflict_action: approval
+
+fields:
+  - canonical: name
+    ghl: name
+    autotask: Opportunity.title
+    at_to_ghl: overwrite
+    ghl_to_at_empty: add
+    ghl_to_at_conflict: approval        # AT wins; a GHL rename needs a human
+    severity: low
+
+  - canonical: monetary_value
+    ghl: monetaryValue
+    autotask: Opportunity.amount
+    at_to_ghl: overwrite
+    ghl_to_at_empty: add
+    ghl_to_at_conflict: approval        # Spec §10.4: GHL->AT amount = approval
+    severity: high
+
+  - canonical: stage
+    ghl: pipelineStageId
+    autotask: Opportunity.stage
+    at_to_ghl: overwrite                # translated via the stage map (§10.3)
+    ghl_to_at_empty: add
+    ghl_to_at_conflict: approval        # backwards moves / closed states gated in code
+    severity: med
+    notes: Values are translated via stage_mapping.yaml, never copied raw.
+
+  - canonical: status
+    ghl: status
+    autotask: Opportunity.status
+    at_to_ghl: overwrite
+    ghl_to_at_empty: add
+    ghl_to_at_conflict: approval        # closed-won/lost changes = approval (§10.2)
+    severity: high
+
+  - canonical: close_date
+    ghl: closeDate
+    autotask: Opportunity.projectedCloseDate
+    at_to_ghl: overwrite
+    ghl_to_at_empty: add
+    ghl_to_at_conflict: approval        # AT wins (§10.4)
+    severity: low
+
+  - canonical: owner
+    ghl: assignedTo
+    autotask: Opportunity.ownerResourceID
+    at_to_ghl: skip                     # user mapping is config-driven; unmapped = skip
+    ghl_to_at_empty: skip
+    ghl_to_at_conflict: n/a
+    severity: low
+    optional: true
+    notes: Requires a user-mapping table (later); skipped until then (§10.4).
+
+do_not_sync:
+  - id
+  - createDate
+  - lastActivityDate
+  - probability            # Autotask auto-calculates; never pushed (§10.4)

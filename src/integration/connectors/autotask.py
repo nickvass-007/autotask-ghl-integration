@@ -15,7 +15,12 @@ from __future__ import annotations
 
 import httpx
 
-from ..canonical.entities import CanonicalCompany, CanonicalContact
+from ..canonical.entities import (
+    CanonicalCompany,
+    CanonicalContact,
+    CanonicalDeal,
+    CanonicalServiceItem,
+)
 from ..config.mapping import load_contacts_mapping
 from ..config.settings import get_settings
 from ..core.http import request_json
@@ -278,29 +283,231 @@ class AutotaskConnector(Connector):
         item = resp.json().get("item")
         return self._account_to_canonical(item) if item else None
 
-    # ── Polling / webhooks ──────────────────────────────────────────────────────
-    async def fetch_changes(
-        self, entity_type: CanonicalEntityType, *, cursor: str | None = None
-    ) -> ChangeSet:
-        """Threadless pagination by ``id > lastId`` (Spec §12.1). Stage 1 wires the
-        Contacts polling shape; Opportunity/Ticket entities arrive in Stage 2."""
-        if entity_type is not CanonicalEntityType.CONTACT:
-            return ChangeSet()  # Stage 2
-        last_id = int(cursor) if cursor else 0
-        body = {
-            "filter": [{"op": "gt", "field": "id", "value": last_id}],
-            "MaxRecords": 500,  # Autotask page cap
+    async def get_account_raw(self, account_id: str) -> dict | None:
+        """Raw Account fields — classification sync reads picklist ids off this
+        (Spec §8.3) without widening the canonical model."""
+        resp = await request_json(
+            self._client,  # type: ignore[arg-type]
+            "GET",
+            self._url(f"Companies/{account_id}"),
+            headers=self._auth_headers(),
+        )
+        return resp.json().get("item")
+
+    async def get_picklist_labels(self, entity: str, field_name: str) -> dict[str, str]:
+        """{value: label} for a picklist field (e.g. Companies.companyType)."""
+        resp = await request_json(
+            self._client,  # type: ignore[arg-type]
+            "GET",
+            self._url(f"{entity}/entityInformation/fields"),
+            headers=self._auth_headers(),
+        )
+        for f in resp.json().get("fields", []):
+            if f.get("name") == field_name:
+                return {
+                    str(v.get("value")): str(v.get("label", v.get("value")))
+                    for v in f.get("picklistValues", [])
+                }
+        return {}
+
+    # ── Picklists (stage-map validation, Spec §10.3) ───────────────────────────
+    async def get_picklist_values(self, entity: str, field_name: str) -> list[str]:
+        """Active picklist values for e.g. Opportunities.stage / Tickets.status."""
+        resp = await request_json(
+            self._client,  # type: ignore[arg-type]
+            "GET",
+            self._url(f"{entity}/entityInformation/fields"),
+            headers=self._auth_headers(),
+        )
+        for f in resp.json().get("fields", []):
+            if f.get("name") == field_name:
+                return [
+                    str(v.get("value"))
+                    for v in f.get("picklistValues", [])
+                    if v.get("isActive", True)
+                ]
+        return []
+
+    # ── Opportunities (canonical.Deal, Spec §10) ────────────────────────────────
+    def _deal_to_canonical(self, item: dict) -> CanonicalDeal:
+        deal = CanonicalDeal(source_system=System.AUTOTASK, source_id=str(item.get("id")))
+        deal.name = item.get("title")
+        deal.monetary_value = item.get("amount")
+        deal.stage = str(item["stage"]) if item.get("stage") is not None else None
+        deal.status = str(item["status"]) if item.get("status") is not None else None
+        deal.close_date = item.get("projectedCloseDate")
+        deal.account_id = str(item["companyID"]) if item.get("companyID") is not None else None
+        deal.contact_id = str(item["contactID"]) if item.get("contactID") is not None else None
+        owner = item.get("ownerResourceID")
+        deal.owner = str(owner) if owner is not None else None
+        return deal
+
+    async def find_opportunities(self, *, account_id: str) -> list[CanonicalDeal]:
+        """Open Opportunities for an Account — the Flow-2 dedupe pool (Spec §10.2)."""
+        body = {"filter": [{"op": "eq", "field": "companyID", "value": int(account_id)}]}
+        resp = await request_json(
+            self._client,  # type: ignore[arg-type]
+            "POST",
+            self._url("Opportunities/query"),
+            headers=self._auth_headers(),
+            json=body,
+        )
+        return [self._deal_to_canonical(i) for i in resp.json().get("items", [])]
+
+    async def get_opportunity(self, external_id: str) -> CanonicalDeal | None:
+        resp = await request_json(
+            self._client,  # type: ignore[arg-type]
+            "GET",
+            self._url(f"Opportunities/{external_id}"),
+            headers=self._auth_headers(),
+        )
+        item = resp.json().get("item")
+        return self._deal_to_canonical(item) if item else None
+
+    async def create_opportunity(self, deal: CanonicalDeal) -> PushResult:
+        """Create an Autotask Opportunity. ⚠️ Only ever reached through the gated
+        Flow-2 path (clean dedupe miss or explicit approval, Spec §10.2)."""
+        if deal.account_id is None:
+            return PushResult(
+                ok=False,
+                detail="Refusing to create Opportunity without a resolved companyID (Spec §10.4).",
+            )
+        payload: dict[str, object] = {
+            "companyID": int(deal.account_id),
+            "title": deal.name or "(untitled)",
+            "stage": int(deal.stage) if deal.stage else None,
+            "status": int(deal.status) if deal.status else 1,
+            "amount": deal.monetary_value or 0,
+            "projectedCloseDate": deal.close_date,
+        }
+        payload = {k: v for k, v in payload.items() if v is not None}
+        # Child-entity rule (same as Contacts): create via the parent Company.
+        resp = await request_json(
+            self._client,  # type: ignore[arg-type]
+            "POST",
+            self._url(f"Companies/{int(deal.account_id)}/Opportunities"),
+            headers=self._auth_headers(),
+            json=payload,
+        )
+        return PushResult(ok=True, external_id=str(resp.json().get("itemId")), detail="created")
+
+    async def update_opportunity(self, external_id: str, changes: dict[str, object]) -> PushResult:
+        """Apply ALREADY-GATED field changes to an existing Opportunity."""
+        existing = await self.get_opportunity(external_id)
+        if existing is None or existing.account_id is None:
+            return PushResult(
+                ok=False, detail=f"Opportunity {external_id} not found or has no companyID"
+            )
+        payload: dict[str, object] = {"id": int(external_id), **changes}
+        resp = await request_json(
+            self._client,  # type: ignore[arg-type]
+            "PATCH",
+            self._url(f"Companies/{int(existing.account_id)}/Opportunities"),
+            headers=self._auth_headers(),
+            json=payload,
+        )
+        return PushResult(ok=True, external_id=external_id, detail=f"updated:{resp.status_code}")
+
+    # ── Tickets (canonical.ServiceItem) — READ-ONLY for the whole of v1 ─────────
+    # ⚠️ GHL must never create or mutate Autotask Tickets (Spec §10.2); this
+    # connector deliberately has NO create_ticket/update_ticket methods.
+    def _ticket_to_canonical(self, item: dict) -> CanonicalServiceItem:
+        ticket = CanonicalServiceItem(source_system=System.AUTOTASK, source_id=str(item.get("id")))
+        ticket.title = item.get("title")
+        ticket.status = str(item["status"]) if item.get("status") is not None else None
+        queue = item.get("queueID")
+        ticket.queue = str(queue) if queue is not None else None
+        ticket.account_id = str(item["companyID"]) if item.get("companyID") is not None else None
+        ticket.contact_id = str(item["contactID"]) if item.get("contactID") is not None else None
+        return ticket
+
+    async def get_ticket(self, external_id: str) -> CanonicalServiceItem | None:
+        resp = await request_json(
+            self._client,  # type: ignore[arg-type]
+            "GET",
+            self._url(f"Tickets/{external_id}"),
+            headers=self._auth_headers(),
+        )
+        item = resp.json().get("item")
+        return self._ticket_to_canonical(item) if item else None
+
+    # ── Ticket notes (additive sync, Spec §10.5) ────────────────────────────────
+    async def fetch_ticket_notes(self, ticket_id: str) -> list[dict]:
+        resp = await request_json(
+            self._client,  # type: ignore[arg-type]
+            "POST",
+            self._url("TicketNotes/query"),
+            headers=self._auth_headers(),
+            json={"filter": [{"op": "eq", "field": "ticketID", "value": int(ticket_id)}]},
+        )
+        return resp.json().get("items", [])
+
+    async def create_ticket_note(self, ticket_id: str, *, title: str, body: str) -> PushResult:
+        """Append a note to an EXISTING ticket (notes are additive-only, §10.5)."""
+        payload = {
+            "ticketID": int(ticket_id),
+            "title": title[:250],
+            "description": body,
+            "noteType": 1,          # standard note
+            "publish": 1,           # internal
         }
         resp = await request_json(
             self._client,  # type: ignore[arg-type]
             "POST",
-            self._url("Contacts/query"),
+            self._url(f"Tickets/{int(ticket_id)}/Notes"),
+            headers=self._auth_headers(),
+            json=payload,
+        )
+        return PushResult(ok=True, external_id=str(resp.json().get("itemId")), detail="note_created")
+
+    # ── Polling / webhooks ──────────────────────────────────────────────────────
+    _POLL_ENTITY = {
+        CanonicalEntityType.CONTACT: "Contacts",
+        CanonicalEntityType.DEAL: "Opportunities",
+        CanonicalEntityType.SERVICE_ITEM: "Tickets",
+    }
+
+    def _poll_to_canonical(self, entity_type: CanonicalEntityType, item: dict):
+        if entity_type is CanonicalEntityType.CONTACT:
+            return self._to_canonical(item)
+        if entity_type is CanonicalEntityType.DEAL:
+            return self._deal_to_canonical(item)
+        return self._ticket_to_canonical(item)
+
+    async def fetch_changes(
+        self, entity_type: CanonicalEntityType, *, cursor: str | None = None
+    ) -> ChangeSet:
+        """Poll for changes (Autotask has no comprehensive webhooks, Spec §4).
+
+        Cursor formats (threadless pagination, Spec §12.1):
+        - ``id:<n>``  — creates sweep, ``id > n`` (also the initial backfill)
+        - ``ts:<iso>`` — updates sweep, ``lastActivityDate > iso``
+        A plain integer cursor is accepted for backwards compatibility (= id sweep).
+        """
+        table = self._POLL_ENTITY.get(entity_type)
+        if table is None:
+            return ChangeSet()
+        if cursor and cursor.startswith("ts:"):
+            filt = {"op": "gt", "field": "lastActivityDate", "value": cursor[3:]}
+        else:
+            raw = cursor.split(":", 1)[1] if cursor and ":" in cursor else (cursor or "0")
+            filt = {"op": "gt", "field": "id", "value": int(raw)}
+        body = {"filter": [filt], "MaxRecords": 500}  # Autotask page cap
+        resp = await request_json(
+            self._client,  # type: ignore[arg-type]
+            "POST",
+            self._url(f"{table}/query"),
             headers=self._auth_headers(),
             json=body,
         )
         items = resp.json().get("items", [])
-        entities = [self._to_canonical(i) for i in items]
-        new_cursor = str(max(int(i["id"]) for i in items)) if items else cursor
+        entities = [self._poll_to_canonical(entity_type, i) for i in items]
+        if items and (cursor is None or not cursor.startswith("ts:")):
+            new_cursor = f"id:{max(int(i['id']) for i in items)}"
+        elif items:
+            new_cursor = f"ts:{max(str(i.get('lastActivityDate') or '') for i in items)}"
+        else:
+            new_cursor = cursor
         return ChangeSet(entities=entities, cursor=new_cursor, has_more=len(items) == 500)
 
     def verify_webhook(self, headers: dict[str, str], body: bytes) -> bool:

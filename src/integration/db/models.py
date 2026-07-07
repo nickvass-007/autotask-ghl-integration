@@ -271,6 +271,25 @@ class ProcessedEvent(Base):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# sync_cursor — per-entity polling positions for the Autotask sweep (Spec §4,
+# §12.1: threadless pagination). One row per (environment, system, entity).
+# ─────────────────────────────────────────────────────────────────────────────
+class SyncCursor(Base):
+    __tablename__ = "sync_cursor"
+
+    id: Mapped[int] = id_column()
+    environment: Mapped[str] = mapped_column(_enum(Environment, "sc_environment"), nullable=False)
+    source_system: Mapped[str] = mapped_column(_enum(System, "sc_source_system"), nullable=False)
+    entity_type: Mapped[str] = mapped_column(String(40), nullable=False)  # contact|deal|service_item
+    cursor: Mapped[str | None] = mapped_column(String(160))
+    updated_at: Mapped[datetime] = updated_at_column()
+
+    __table_args__ = (
+        UniqueConstraint("environment", "source_system", "entity_type", name="uq_sync_cursor"),
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # circuit_breaker_state — supports the Spec §5.5 circuit breaker. Single row per
 # (environment, target_system); tripped writes are paused until reset.
 # ─────────────────────────────────────────────────────────────────────────────

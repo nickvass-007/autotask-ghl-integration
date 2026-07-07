@@ -1,0 +1,42 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Stage E — classification sync, Autotask → GHL (Spec §8.3).
+#
+# Direction is AT→GHL ONLY and authoritative: classifications are owned by the
+# system of record. GHL→Autotask for these fields is BLOCKED. The integration
+# does not run campaigns — it keeps GHL's segmentation fields accurate so
+# GHL-native tools target correctly ("mail-out to classified customers").
+#
+# Two output kinds per attribute:
+#   as_tag:          true  -> applied as a GHL tag  "<prefix><value>"
+#   ghl_custom_field: <id> -> written to that GHL custom-field ID (Settings →
+#                             Custom Fields in the sub-account; paste the ID)
+# ─────────────────────────────────────────────────────────────────────────────
+
+defaults:
+  tag_prefix: "at:"          # tags look like  at:customer-type/managed-services
+  lifecycle_tag: "customer"  # every synced contact gets lifecycle = Customer (§8.3)
+
+attributes:
+  - attribute: customer_type
+    autotask_entity: Company
+    autotask_field: companyType          # picklist id; label resolved at runtime
+    as_tag: true
+    ghl_custom_field: ""                 # optional: also write to a custom field
+
+  - attribute: classification
+    autotask_entity: Company
+    autotask_field: classification       # Autotask "Classification" picklist
+    as_tag: true
+    ghl_custom_field: ""
+
+  - attribute: account_owner
+    autotask_entity: Company
+    autotask_field: ownerResourceID
+    as_tag: false                        # an owner id isn't a useful tag by itself
+    ghl_custom_field: ""                 # paste the GHL custom-field ID to enable
+
+  - attribute: contract_status
+    autotask_entity: Company
+    autotask_field: ""                   # derived: active contract? (Stage-3 refinement)
+    as_tag: false
+    ghl_custom_field: ""

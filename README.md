@@ -224,10 +224,13 @@ end-to-end** (dedupe → conflict → approval → audit) with Account-linkage g
 Contacts approvals + transaction feed; environment switch defaulting to sandbox and visible
 everywhere.
 
-**Later stages (NOT built yet):** Flow 2 Opportunities/Tickets; Stage C conversion handoff;
-Stage E classification sync; live Azure provisioning + production cutover; additional connectors
-(e.g. 3CX). The **seams** for all of these exist now (full schema, canonical hub, connector
-contract, config-driven mapping) so they plug in without a rewrite — see
-[CONTRIBUTING.md](CONTRIBUTING.md).
+**Stage 2 (code complete, needs configuration):** Flow 2 Opportunities/Tickets — Autotask→GHL
+mirrors (Sales + read-only Service pipelines), the gated GHL→Autotask Opportunity direction,
+Stage C conversion handoff on closed-won, Stage E classification sync, notes sync, and the
+Autotask polling sweep. All of it is **inert until configured** — follow
+[docs/flow2-setup.md](docs/flow2-setup.md) (GHL scopes, pipelines, `config/stage_mapping.yaml`,
+`ENABLE_POLLER`).
 
-After you confirm Stage 1 works in sandbox, we proceed to Flow 2.
+**Later stages (NOT built yet):** live Azure provisioning + production cutover; additional
+connectors (e.g. 3CX). The **seams** exist (full schema, canonical hub, connector contract,
+config-driven mapping) so they plug in without a rewrite — see [CONTRIBUTING.md](CONTRIBUTING.md).

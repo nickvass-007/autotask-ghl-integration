@@ -77,6 +77,14 @@ class Settings(BaseSettings):
     # ── Polling / reconciliation ──
     autotask_poll_interval_seconds: int = 300
     reconciliation_interval_seconds: int = 3600
+    # ⚠️ Off by default: the poller mirrors Autotask changes into GHL continuously.
+    # Locally it runs as a background task (scripts/run_poller.py or ENABLE_POLLER);
+    # in production it moves to Timer-triggered Functions (Spec §12.2).
+    enable_poller: bool = False
+
+    # ── Stage C — conversion handoff (Spec §8.2) ──
+    # The stamp applied to a GHL contact once its record lives in Autotask.
+    converted_tag: str = "Converted — Managed in Autotask"
 
     @property
     def is_production(self) -> bool:

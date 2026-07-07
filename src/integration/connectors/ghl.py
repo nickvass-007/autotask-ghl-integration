@@ -27,7 +27,7 @@ from cryptography.hazmat.primitives.asymmetric.rsa import RSAPublicKey
 
 import httpx
 
-from ..canonical.entities import CanonicalContact
+from ..canonical.entities import CanonicalContact, CanonicalDeal
 from ..config.settings import get_settings
 from ..core.http import request_json
 from ..core.logging import get_logger
@@ -273,11 +273,135 @@ class GHLConnector(Connector):
         )
         return PushResult(ok=True, external_id=external_id, detail=f"updated:{resp.status_code}")
 
+    # ── Pipelines & Opportunities (Flow 2, Spec §10) ────────────────────────────
+    async def get_pipelines(self) -> list[dict]:
+        """Pipelines + stages for the location — used to validate the stage map
+        (Spec §10.3). Shape: [{id, name, stages: [{id, name}, ...]}, ...]."""
+        resp = await request_json(
+            self._client,  # type: ignore[arg-type]
+            "GET",
+            f"{GHL_API_BASE}/opportunities/pipelines",
+            headers=self._headers(),
+            params={"locationId": self._settings.ghl_location_id},
+        )
+        return resp.json().get("pipelines", [])
+
+    def _deal_to_canonical(self, item: dict) -> CanonicalDeal:
+        deal = CanonicalDeal(
+            source_system=System.GHL,
+            source_id=str(item.get("id")) if item.get("id") else None,
+        )
+        deal.name = item.get("name")
+        deal.monetary_value = item.get("monetaryValue")
+        deal.status = item.get("status")
+        deal.contact_id = str(item.get("contactId")) if item.get("contactId") else None
+        deal.owner = item.get("assignedTo")
+        # GHL pipeline/stage ids ride in the extra bag; the stage map translates them.
+        deal.extra["pipeline_id"] = str(item.get("pipelineId") or "")
+        deal.extra["stage_id"] = str(item.get("pipelineStageId") or "")
+        return deal
+
+    async def get_opportunity(self, external_id: str) -> CanonicalDeal | None:
+        resp = await request_json(
+            self._client,  # type: ignore[arg-type]
+            "GET",
+            f"{GHL_API_BASE}/opportunities/{external_id}",
+            headers=self._headers(),
+        )
+        item = resp.json().get("opportunity")
+        return self._deal_to_canonical(item) if item else None
+
+    async def create_opportunity(
+        self,
+        deal: CanonicalDeal,
+        *,
+        pipeline_id: str,
+        stage_id: str,
+    ) -> PushResult:
+        payload = {
+            "locationId": self._settings.ghl_location_id,
+            "pipelineId": pipeline_id,
+            "pipelineStageId": stage_id,
+            "name": deal.name or "(untitled)",
+            "status": deal.status or "open",
+        }
+        if deal.monetary_value is not None:
+            payload["monetaryValue"] = deal.monetary_value
+        if deal.contact_id:
+            payload["contactId"] = deal.contact_id
+        resp = await request_json(
+            self._client,  # type: ignore[arg-type]
+            "POST",
+            f"{GHL_API_BASE}/opportunities/",
+            headers=self._headers(),
+            json=payload,
+        )
+        new_id = str(resp.json().get("opportunity", {}).get("id"))
+        return PushResult(ok=True, external_id=new_id, detail="created")
+
+    async def update_opportunity(self, external_id: str, changes: dict[str, object]) -> PushResult:
+        body = {k: v for k, v in changes.items() if v is not None}
+        resp = await request_json(
+            self._client,  # type: ignore[arg-type]
+            "PUT",
+            f"{GHL_API_BASE}/opportunities/{external_id}",
+            headers=self._headers(),
+            json=body,
+        )
+        return PushResult(ok=True, external_id=external_id, detail=f"updated:{resp.status_code}")
+
+    # ── Notes & tags (additive engagement artefacts, Spec §10.5, §8.3) ──────────
+    async def get_contact_notes(self, contact_id: str) -> list[dict]:
+        resp = await request_json(
+            self._client,  # type: ignore[arg-type]
+            "GET",
+            f"{GHL_API_BASE}/contacts/{contact_id}/notes",
+            headers=self._headers(),
+        )
+        return resp.json().get("notes", [])
+
+    async def create_contact_note(self, contact_id: str, body: str) -> PushResult:
+        resp = await request_json(
+            self._client,  # type: ignore[arg-type]
+            "POST",
+            f"{GHL_API_BASE}/contacts/{contact_id}/notes",
+            headers=self._headers(),
+            json={"body": body},
+        )
+        return PushResult(
+            ok=True, external_id=str(resp.json().get("note", {}).get("id")), detail="note_created"
+        )
+
+    async def add_tags(self, contact_id: str, tags: list[str]) -> PushResult:
+        """Additive tag application (classification sync + Converted stamp)."""
+        resp = await request_json(
+            self._client,  # type: ignore[arg-type]
+            "POST",
+            f"{GHL_API_BASE}/contacts/{contact_id}/tags",
+            headers=self._headers(),
+            json={"tags": tags},
+        )
+        return PushResult(ok=True, external_id=contact_id, detail=f"tags:{resp.status_code}")
+
+    async def update_custom_fields(self, contact_id: str, fields: dict[str, object]) -> PushResult:
+        """Set custom-field values on a contact (classification sync, Spec §8.3).
+        ``fields`` is keyed by GHL custom-field ID."""
+        payload = {"customFields": [{"id": k, "value": v} for k, v in fields.items()]}
+        resp = await request_json(
+            self._client,  # type: ignore[arg-type]
+            "PUT",
+            f"{GHL_API_BASE}/contacts/{contact_id}",
+            headers=self._headers(),
+            json=payload,
+        )
+        return PushResult(ok=True, external_id=contact_id, detail=f"custom:{resp.status_code}")
+
     # ── Polling / webhooks ──────────────────────────────────────────────────────
     async def fetch_changes(
         self, entity_type: CanonicalEntityType, *, cursor: str | None = None
     ) -> ChangeSet:
-        # GHL emits webhooks for contacts; polling is a reconciliation backstop (Stage 2+).
+        # GHL emits webhooks for contacts + opportunities; polling is a
+        # reconciliation backstop only (Spec §4).
         return ChangeSet()
 
     def verify_webhook(self, headers: dict[str, str], body: bytes) -> bool:

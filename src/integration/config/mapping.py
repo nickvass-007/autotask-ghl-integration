@@ -91,6 +91,35 @@ def load_contacts_mapping() -> ContactsMapping:
 
 
 @lru_cache
+def load_opportunities_mapping() -> ContactsMapping:
+    """canonical.Deal field rules (Spec §10.4) — same rule shape as Contacts, so
+    conflict detection is reused verbatim across flows."""
+    raw = _load_yaml("opportunities.mapping.yaml")
+    defaults = raw.get("defaults", {})
+    fields = tuple(
+        FieldRule(
+            canonical=f["canonical"],
+            ghl=f["ghl"],
+            autotask=f["autotask"],
+            at_to_ghl=f["at_to_ghl"],
+            ghl_to_at_empty=f["ghl_to_at_empty"],
+            ghl_to_at_conflict=f["ghl_to_at_conflict"],
+            severity=Severity(f.get("severity", "low")),
+            create_only=f.get("create_only", False),
+            optional=f.get("optional", False),
+            notes=f.get("notes", ""),
+        )
+        for f in raw.get("fields", [])
+    )
+    return ContactsMapping(
+        auto_apply_additive=defaults.get("auto_apply_additive", True),
+        conflict_action=defaults.get("conflict_action", "approval"),
+        fields=fields,
+        do_not_sync=frozenset(raw.get("do_not_sync", [])),
+    )
+
+
+@lru_cache
 def load_stage_mapping() -> dict:
     """Raw stage-mapping config (Spec §10.3). Consumed by Flow 2 in Stage 2; loaded
     here so startup validation can confirm the file parses."""

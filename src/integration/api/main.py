@@ -24,13 +24,18 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Header, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, RedirectResponse
 
-from ..canonical.entities import CanonicalContact
+import asyncio
+
+from ..canonical.entities import CanonicalContact, CanonicalDeal
 from ..config.settings import get_settings
+from ..config.stages import load_stage_map, sync_stage_map_to_db
 from ..core.logging import configure_logging, get_logger, new_correlation_id
-from ..db.enums import System
+from ..db.enums import ApprovalType, System
 from ..db.session import session_scope
+from ..jobs.poller import run_poller
 from ..sync import contacts as contacts_flow
-from ..sync.approvals import list_pending
+from ..sync import deals as deals_flow
+from ..sync.approvals import get_approval, list_pending
 from ..teams.bot import handle_command
 from .admin import router as admin_router
 from .deps import get_autotask, get_ghl, set_ghl_token
@@ -48,7 +53,24 @@ async def lifespan(app: FastAPI):
     log.warning("=" * 72)
     if settings.is_production:
         log.warning("⚠️  PRODUCTION is live — every Autotask write affects real data.")
+    # Flow 2: surface the stage map in the DB for ops inspection (best-effort —
+    # placeholder IDs are fine here; validation runs against live APIs on demand).
+    try:
+        with session_scope() as session:
+            sync_stage_map_to_db(session, settings.environment)
+    except Exception as exc:
+        log.warning("Stage map not synced to DB: %s", exc)
+
+    stop = asyncio.Event()
+    poller_task: asyncio.Task | None = None
+    if settings.enable_poller:
+        poller_task = asyncio.create_task(
+            run_poller(autotask_factory=get_autotask, ghl_factory=get_ghl, stop=stop)
+        )
     yield
+    if poller_task is not None:
+        stop.set()
+        poller_task.cancel()
 
 
 app = FastAPI(title="Autotask ⇄ GoHighLevel Integration", version="0.1.0", lifespan=lifespan)
@@ -133,6 +155,99 @@ async def ghl_contact_webhook(request: Request) -> JSONResponse:
     )
 
 
+# ── GHL opportunity webhook -> gated Flow-2 pipeline (Spec §10.2) ─────────────
+@app.post("/webhooks/crm/opportunity")
+async def ghl_opportunity_webhook(request: Request) -> JSONResponse:
+    body = await request.body()
+    ghl = get_ghl()
+    if not ghl.verify_webhook(dict(request.headers), body):
+        raise HTTPException(status_code=401, detail="invalid webhook signature")
+
+    payload = await request.json()
+    event_id = str(payload.get("eventId") or payload.get("id") or new_correlation_id())
+    data = payload.get("opportunity", payload)
+
+    deal = CanonicalDeal(
+        source_system=System.GHL,
+        source_id=str(data.get("id")) if data.get("id") else None,
+    )
+    deal.name = data.get("name")
+    deal.monetary_value = data.get("monetaryValue")
+    deal.status = data.get("status")
+    deal.contact_id = str(data.get("contactId")) if data.get("contactId") else None
+    deal.extra["pipeline_id"] = str(data.get("pipelineId") or "")
+    deal.extra["stage_id"] = str(data.get("pipelineStageId") or "")
+
+    autotask = await get_autotask()
+    with session_scope() as session:
+        outcome = await deals_flow.process_ghl_opportunity(
+            session,
+            ghl_deal=deal,
+            event_id=event_id,
+            autotask=autotask,
+            ghl=ghl,
+            stage_map=load_stage_map(),
+        )
+    return JSONResponse(
+        {
+            "action": outcome.action,
+            "correlation_id": outcome.correlation_id,
+            "autotask_id": outcome.autotask_id,
+            "approval_ids": outcome.approval_ids,
+            "detail": outcome.detail,
+        }
+    )
+
+
+# ── Stage-map inspection (Spec §10.3: list + flag entries that don't resolve) ──
+@app.get("/admin/stage-map")
+async def stage_map_status() -> JSONResponse:
+    smap = load_stage_map()
+    problems: list[str] = []
+    try:
+        from ..config.stages import validate_stage_map
+
+        autotask = await get_autotask()
+        ghl = get_ghl()
+        await ghl.authenticate()
+        problems = await validate_stage_map(autotask=autotask, ghl=ghl)
+        validated = True
+    except Exception as exc:
+        problems = [f"live validation unavailable: {exc}"]
+        validated = False
+    return JSONResponse(
+        {
+            "validated": validated,
+            "problems": problems,
+            "sales": {
+                "pipeline": smap.sales.ghl_pipeline_id,
+                "closed_won_stage": smap.sales.closed_won_stage_id,
+                "stages": [
+                    {
+                        "ghl_stage": s.ghl_stage_id,
+                        "autotask_value": s.autotask_status_value,
+                        "direction": s.direction.value,
+                        "active": s.active,
+                    }
+                    for s in smap.sales.stages
+                ],
+            },
+            "service": {
+                "pipeline": smap.service.ghl_pipeline_id,
+                "stages": [
+                    {
+                        "ghl_stage": s.ghl_stage_id,
+                        "autotask_value": s.autotask_status_value,
+                        "direction": s.direction.value,
+                        "active": s.active,
+                    }
+                    for s in smap.service.stages
+                ],
+            },
+        }
+    )
+
+
 # ── Approvals (Spec §11.1) ────────────────────────────────────────────────────
 @app.get("/approvals")
 async def approvals() -> JSONResponse:
@@ -172,15 +287,30 @@ async def decide_approval(
     decided_by = body.get("decided_by", "teams-bot")
     autotask = await get_autotask()
     with session_scope() as session:
-        outcome = await contacts_flow.apply_decision(
-            session,
-            approval_id=approval_id,
-            approve=approve,
-            decided_by=decided_by,
-            autotask=autotask,
-            chosen_account_id=body.get("chosen_id"),
-            chosen_autotask_contact_id=body.get("chosen_id"),
-        )
+        # Route by approval family: Flow-2 / Stage-C types apply via the deals
+        # handler; everything else is the Flow-1 Contacts handler.
+        row = get_approval(session, approval_id)
+        is_deal = row is not None and ApprovalType(row.approval_type) in deals_flow.DEAL_APPROVAL_TYPES
+        if is_deal:
+            outcome = await deals_flow.apply_deal_decision(
+                session,
+                approval_id=approval_id,
+                approve=approve,
+                decided_by=decided_by,
+                autotask=autotask,
+                ghl=get_ghl(),
+                chosen_account_id=body.get("chosen_id"),
+            )
+        else:
+            outcome = await contacts_flow.apply_decision(
+                session,
+                approval_id=approval_id,
+                approve=approve,
+                decided_by=decided_by,
+                autotask=autotask,
+                chosen_account_id=body.get("chosen_id"),
+                chosen_autotask_contact_id=body.get("chosen_id"),
+            )
     return JSONResponse({"action": outcome.action, "correlation_id": outcome.correlation_id})
 
 
