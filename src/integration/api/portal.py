@@ -516,22 +516,66 @@ async def contacts(
             )
             .count()
         )
-        return JSONResponse(
-            {
-                "total": total,
-                "offset": offset,
-                "limit": limit,
-                "contacts": [
-                    {
-                        "autotask_id": r.autotask_id,
-                        "ghl_id": r.ghl_id,
-                        "last_synced_at": _iso(r.last_synced_at),
-                    }
-                    for r in rows
-                ],
-                "autotask_web_base": settings["autotask_web_base"],
-            }
-        )
+
+    # Enrich the page live from Autotask (IDs only live in the mapping table):
+    # one batched contact query + one batched company query per page.
+    details: dict[str, dict] = {}
+    company_names: dict[str, str] = {}
+    try:
+        autotask = await get_autotask()
+        ids = [int(r.autotask_id) for r in rows if r.autotask_id]
+        if ids:
+            resp = await autotask._client.post(
+                autotask._url("Contacts/query"),
+                headers=autotask._auth_headers(),
+                json={"filter": [{"op": "in", "field": "id", "value": ids}], "MaxRecords": 500},
+            )
+            resp.raise_for_status()
+            for item in resp.json().get("items", []):
+                details[str(item["id"])] = item
+            company_ids = sorted(
+                {int(i["companyID"]) for i in details.values() if i.get("companyID") is not None}
+            )
+            if company_ids:
+                resp = await autotask._client.post(
+                    autotask._url("Companies/query"),
+                    headers=autotask._auth_headers(),
+                    json={
+                        "filter": [{"op": "in", "field": "id", "value": company_ids}],
+                        "IncludeFields": ["id", "companyName"],
+                        "MaxRecords": 500,
+                    },
+                )
+                resp.raise_for_status()
+                for item in resp.json().get("items", []):
+                    company_names[str(item["id"])] = item.get("companyName") or ""
+    except Exception as exc:  # degrade to IDs-only rather than failing the page
+        log.warning("Contacts page enrichment unavailable: %s", exc)
+
+    def _row(r) -> dict:
+        d = details.get(str(r.autotask_id), {})
+        company_id = str(d["companyID"]) if d.get("companyID") is not None else None
+        return {
+            "autotask_id": r.autotask_id,
+            "ghl_id": r.ghl_id,
+            "last_synced_at": _iso(r.last_synced_at),
+            "first_name": d.get("firstName"),
+            "last_name": d.get("lastName"),
+            "email": d.get("emailAddress"),
+            "phone": d.get("phone") or d.get("mobilePhone"),
+            "company_id": company_id,
+            "company_name": company_names.get(company_id or "", None),
+        }
+
+    return JSONResponse(
+        {
+            "total": total,
+            "offset": offset,
+            "limit": limit,
+            "contacts": [_row(r) for r in rows],
+            "autotask_web_base": settings["autotask_web_base"],
+        }
+    )
 
 
 # ── Logs & settings ───────────────────────────────────────────────────────────

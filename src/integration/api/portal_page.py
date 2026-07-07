@@ -135,8 +135,13 @@ async function pageContacts(){
   const page=Math.floor(d.offset/d.limit)+1;
   const from=d.total?d.offset+1:0, to=Math.min(d.offset+d.contacts.length,d.total);
   $("#page").innerHTML=`<div class="card"><h2>Synced contacts <span class="muted">(${d.total} linked)</span></h2>
-  <div class="scroll"><table><tr><th>Autotask ID</th><th>GHL ID</th><th>Last synced</th></tr>
-  ${d.contacts.map(c=>`<tr><td><a target="_blank" href="${AT_BASE}/Mvc/CRM/ContactDetail.mvc?contactId=${esc(c.autotask_id)}">${esc(c.autotask_id)}</a></td>
+  <div class="scroll"><table><tr><th>First name</th><th>Last name</th><th>Email</th><th>Phone</th><th>Company</th><th>Autotask ID</th><th>GHL ID</th><th>Last synced</th></tr>
+  ${d.contacts.map(c=>`<tr>
+    <td>${esc(c.first_name||"—")}</td><td>${esc(c.last_name||"—")}</td>
+    <td>${c.email?`<a href="mailto:${esc(c.email)}">${esc(c.email)}</a>`:"—"}</td>
+    <td>${esc(c.phone||"—")}</td>
+    <td>${c.company_id?`<a target="_blank" href="${AT_BASE}/Mvc/CRM/AccountDetail.mvc?accountId=${esc(c.company_id)}">${esc(c.company_name||c.company_id)}</a>`:"—"}</td>
+    <td><a target="_blank" href="${AT_BASE}/Mvc/CRM/ContactDetail.mvc?contactId=${esc(c.autotask_id)}">${esc(c.autotask_id)}</a></td>
     <td class="muted">${esc(c.ghl_id)}</td><td>${fmtDt(c.last_synced_at)}</td></tr>`).join("")}
   </table></div>
   <div class="row" style="margin-top:12px;justify-content:space-between">
