@@ -67,6 +67,52 @@ async def test_email_duplicate_adopts_existing_contact():
 
 
 @respx.mock
+async def test_invalid_email_dropped_when_phone_remains():
+    route = respx.post(f"{GHL_API_BASE}/contacts/").mock(
+        side_effect=[
+            httpx.Response(422, json={"message": ["email must be an email"], "statusCode": 422}),
+            httpx.Response(201, json={"contact": {"id": "ghl-new-3"}}),
+        ]
+    )
+    result = await _connector().create_contact(_contact())
+    assert result.ok and result.external_id == "ghl-new-3"
+    assert result.detail == "created_dropped:email(invalid)"
+    assert b'"email"' not in route.calls[1].request.content
+
+
+@respx.mock
+async def test_invalid_email_with_no_phone_still_fails():
+    respx.post(f"{GHL_API_BASE}/contacts/").mock(
+        return_value=httpx.Response(
+            422, json={"message": ["email must be an email"], "statusCode": 422}
+        )
+    )
+    contact = _contact()
+    contact.phone = None
+    with pytest.raises(httpx.HTTPStatusError):
+        await _connector().create_contact(contact)
+
+
+@respx.mock
+async def test_invalid_phone_dropped_when_email_remains():
+    route = respx.post(f"{GHL_API_BASE}/contacts/").mock(
+        side_effect=[
+            httpx.Response(
+                400,
+                json={
+                    "message": "The string supplied did not seem to be a phone number",
+                    "statusCode": 400,
+                },
+            ),
+            httpx.Response(201, json={"contact": {"id": "ghl-new-4"}}),
+        ]
+    )
+    result = await _connector().create_contact(_contact())
+    assert result.ok and result.detail == "created_dropped:phone(invalid)"
+    assert b'"phone"' not in route.calls[1].request.content
+
+
+@respx.mock
 async def test_unrelated_400_still_raises():
     respx.post(f"{GHL_API_BASE}/contacts/").mock(
         return_value=httpx.Response(400, json={"statusCode": 400, "message": "bad payload"})

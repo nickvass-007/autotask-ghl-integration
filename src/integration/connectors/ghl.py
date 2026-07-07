@@ -272,7 +272,8 @@ class GHLConnector(Connector):
           duplicating.
         """
         payload = self._payload(contact)
-        for _ in range(3):
+        dropped: list[str] = []
+        for _ in range(4):
             try:
                 resp = await request_json(
                     self._client,  # type: ignore[arg-type]
@@ -282,34 +283,52 @@ class GHLConnector(Connector):
                     json=payload,
                 )
                 new_id = str(resp.json().get("contact", {}).get("id"))
-                return PushResult(ok=True, external_id=new_id, detail="created")
+                detail = "created" if not dropped else f"created_dropped:{','.join(dropped)}"
+                return PushResult(ok=True, external_id=new_id, detail=detail)
             except httpx.HTTPStatusError as exc:
-                if exc.response.status_code != 400:
+                if exc.response.status_code not in (400, 422):
                     raise
                 try:
                     data = exc.response.json()
                 except ValueError:
                     raise exc from None
-                if "duplicated contacts" not in str(data.get("message", "")):
+                message = str(data.get("message", ""))
+
+                # Location dedupe policy: phone match = shared office line (keep
+                # the person, drop the phone); anything else = genuine existing
+                # contact — adopt its id so the mapping links, not duplicates.
+                if "duplicated contacts" in message:
+                    meta = data.get("meta") or {}
+                    matching = meta.get("matchingField")
+                    existing_id = meta.get("contactId")
+                    if matching == "phone" and payload.get("phone"):
+                        payload.pop("phone")
+                        dropped.append("phone(shared)")
+                        continue
+                    if existing_id:
+                        return PushResult(
+                            ok=True,
+                            external_id=str(existing_id),
+                            detail=f"deduped_existing:{matching}",
+                        )
                     raise
-                meta = data.get("meta") or {}
-                matching = meta.get("matchingField")
-                existing_id = meta.get("contactId")
-                if matching == "phone" and payload.get("phone"):
-                    log.info(
-                        "GHL duplicate-phone on create (shared line with %s) — retrying without phone",
-                        existing_id,
-                    )
-                    payload.pop("phone")
+
+                # Data-quality salvage: drop the single invalid field and keep the
+                # person, PROVIDED another identifier (email or phone) remains.
+                if "email must be an email" in message and payload.get("email"):
+                    if not payload.get("phone"):
+                        raise  # no identifier would remain — surface as data quality
+                    payload.pop("email")
+                    dropped.append("email(invalid)")
                     continue
-                if existing_id:
-                    return PushResult(
-                        ok=True,
-                        external_id=str(existing_id),
-                        detail=f"deduped_existing:{matching}",
-                    )
+                if "did not seem to be a phone number" in message and payload.get("phone"):
+                    if not payload.get("email"):
+                        raise
+                    payload.pop("phone")
+                    dropped.append("phone(invalid)")
+                    continue
                 raise
-        return PushResult(ok=False, detail="duplicate resolution failed after retries")
+        return PushResult(ok=False, detail="create retries exhausted")
 
     async def update_contact(self, external_id: str, changes: dict[str, object]) -> PushResult:
         # changes keyed by GHL field name (engine resolves direction); strip Nones.
