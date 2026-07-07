@@ -16,6 +16,7 @@ from sqlalchemy import (
     Boolean,
     Enum,
     Index,
+    Integer,
     String,
     Text,
     UniqueConstraint,
@@ -310,6 +311,28 @@ class SyncCriteria(Base):
 
     __table_args__ = (
         Index("ix_sync_criteria_env", "environment", "entity_type", "active"),
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# oauth_token_store — persisted OAuth tokens for LOCAL DEV so the GHL grant
+# survives API restarts (GHL rotates the refresh token on every refresh; losing
+# it forces a manual re-auth). ⚠️ In production this moves to Azure Key Vault
+# via Managed Identity (Spec §12.3) — this table is the local stand-in.
+# ─────────────────────────────────────────────────────────────────────────────
+class OAuthTokenStore(Base):
+    __tablename__ = "oauth_token_store"
+
+    id: Mapped[int] = id_column()
+    environment: Mapped[str] = mapped_column(_enum(Environment, "tok_environment"), nullable=False)
+    system: Mapped[str] = mapped_column(_enum(System, "tok_system"), nullable=False)
+    access_token: Mapped[str] = mapped_column(Text, nullable=False)
+    refresh_token: Mapped[str] = mapped_column(Text, nullable=False)
+    expires_in: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    updated_at: Mapped[datetime] = updated_at_column()
+
+    __table_args__ = (
+        UniqueConstraint("environment", "system", name="uq_oauth_token_store"),
     )
 
 

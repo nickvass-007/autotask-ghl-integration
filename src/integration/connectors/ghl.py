@@ -100,12 +100,16 @@ class GHLConnector(Connector):
         environment: Environment,
         client: httpx.AsyncClient | None = None,
         token: OAuthToken | None = None,
+        on_token_update=None,
     ) -> None:
         super().__init__(environment)
         self._settings = get_settings()
         self._client = client
         # In production these live in Key Vault; injected here for tests / local dev.
         self._token = token
+        # ⚠️ GHL rotates the refresh token on every refresh — the owner of the
+        # token store passes a callback so no rotation is ever lost.
+        self._on_token_update = on_token_update
 
     @property
     def system(self) -> System:
@@ -147,6 +151,8 @@ class GHLConnector(Connector):
             refresh_token=body["refresh_token"],
             expires_in=body.get("expires_in", 0),
         )
+        if self._on_token_update is not None:
+            self._on_token_update(self._token)
         return self._token
 
     async def exchange_code(self, code: str) -> OAuthToken:
