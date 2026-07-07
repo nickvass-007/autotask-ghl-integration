@@ -63,10 +63,48 @@ def approval_card(approval: ApprovalQueue, callback_token: str) -> dict:
                     f"`{f.get('before')}`  →  `{f.get('after')}`",
                 }
             )
-    if "candidates" in pc and pc["candidates"]:
-        body.append({"type": "TextBlock", "weight": "Bolder", "text": "Candidates", "wrap": True})
-        for c in pc["candidates"]:
-            body.append({"type": "TextBlock", "wrap": True, "text": f"• {c}"})
+    # Flow-2 single-field cards (sales outcome / amount conflict, Spec §10.2).
+    if "field" in pc and "fields" not in pc:
+        body.append(
+            {
+                "type": "TextBlock",
+                "wrap": True,
+                "text": f"**{pc['field']}**:  `{pc.get('before')}`  →  `{pc.get('after')}`",
+            }
+        )
+    # Stage-C onboarding cards show the won deal + its value (Spec §8.2, §11.1).
+    if "deal" in pc:
+        deal = pc["deal"] or {}
+        body.append(
+            {
+                "type": "TextBlock",
+                "weight": "Bolder",
+                "wrap": True,
+                "text": f"Won deal: {deal.get('name', '—')}  ·  "
+                f"value {deal.get('monetary_value', '—')}",
+            }
+        )
+    for key, label in (
+        ("candidates", "Candidates"),
+        ("contact_candidates", "Possible existing Contacts"),
+        ("account_candidates", "Possible Accounts to link"),
+    ):
+        if pc.get(key):
+            body.append({"type": "TextBlock", "weight": "Bolder", "text": label, "wrap": True})
+            for c in pc[key]:
+                if isinstance(c, dict):
+                    label_bits = [str(c.get("id") or c.get("source_id") or "?")]
+                    name = c.get("name") or " ".join(
+                        p for p in (c.get("first_name"), c.get("last_name")) if p
+                    )
+                    if name:
+                        label_bits.append(name)
+                    if c.get("email"):
+                        label_bits.append(str(c["email"]))
+                    text = " · ".join(label_bits)
+                else:
+                    text = str(c)
+                body.append({"type": "TextBlock", "wrap": True, "text": f"• {text}"})
 
     # Buttons call back into POST /approvals/{id}/decide with the verification token.
     base_data = {"approval_id": approval.id, "token": callback_token}
@@ -75,7 +113,7 @@ def approval_card(approval: ApprovalQueue, callback_token: str) -> dict:
         {"type": "Action.Submit", "title": "❌ Reject", "data": {**base_data, "decision": "reject"}},
     ]
     # Override (pick a candidate) is offered where the approval carries candidates.
-    if pc.get("candidates"):
+    if pc.get("candidates") or pc.get("account_candidates") or pc.get("contact_candidates"):
         actions.append(
             {
                 "type": "Action.ShowCard",
