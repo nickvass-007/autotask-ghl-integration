@@ -145,6 +145,41 @@ async def overview(request: Request, x_admin_token: str = Header(default="")) ->
             .count()
         )
         running = session.query(SyncJob).filter_by(environment=env, status="running").count()
+
+        # Work-done digests from the transaction feed (24h and 7 days).
+        from datetime import timedelta
+
+        def _digest(hours: int) -> dict:
+            since = utcnow() - timedelta(hours=hours)
+            rows = session.execute(
+                select(TransactionLog.operation, TransactionLog.status).where(
+                    TransactionLog.environment == env, TransactionLog.timestamp >= since
+                )
+            ).all()
+            out = {"created": 0, "updated": 0, "skipped": 0, "conflicts": 0, "errors": 0, "total": len(rows)}
+            for op, status in rows:
+                op_v, st_v = _enum_val(op), _enum_val(status)
+                if st_v == "error":
+                    out["errors"] += 1
+                elif st_v == "conflict":
+                    out["conflicts"] += 1
+                elif op_v == "create":
+                    out["created"] += 1
+                elif op_v == "update":
+                    out["updated"] += 1
+                else:
+                    out["skipped"] += 1
+            return out
+
+        decided = {
+            "approved": session.query(ApprovalQueue)
+            .filter_by(environment=env, status=ApprovalStatus.APPROVED).count(),
+            "rejected": session.query(ApprovalQueue)
+            .filter_by(environment=env, status=ApprovalStatus.REJECTED).count(),
+        }
+        jobs_done = (
+            session.query(SyncJob).filter_by(environment=env, status="succeeded").count()
+        )
         jobs = [
             _job_dict(j)
             for j in session.execute(
@@ -163,7 +198,11 @@ async def overview(request: Request, x_admin_token: str = Header(default="")) ->
                     "contacts_linked": contacts,
                     "companies_linked": companies,
                     "jobs_running": running,
+                    "jobs_completed": jobs_done,
                 },
+                "work_24h": _digest(24),
+                "work_7d": _digest(24 * 7),
+                "approvals_decided": decided,
                 "recent_jobs": jobs,
             }
         )
@@ -549,6 +588,31 @@ async def contacts(
                 resp.raise_for_status()
                 for item in resp.json().get("items", []):
                     company_names[str(item["id"])] = item.get("companyName") or ""
+        # Ticket survey (CSAT) results per contact — averaged across all their
+        # completed surveys. Field names vary by Autotask config; try the
+        # common numeric candidates and degrade silently if the entity is off.
+        try:
+            resp = await autotask._client.post(
+                autotask._url("SurveyResults/query"),
+                headers=autotask._auth_headers(),
+                json={"filter": [{"op": "in", "field": "contactID", "value": ids}], "MaxRecords": 500},
+            )
+            resp.raise_for_status()
+            agg: dict[str, list[float]] = {}
+            for item in resp.json().get("items", []):
+                score = None
+                for key in ("surveyGrade", "companyRating", "rating", "score"):
+                    if isinstance(item.get(key), (int, float)):
+                        score = float(item[key])
+                        break
+                if score is not None and item.get("contactID") is not None:
+                    agg.setdefault(str(item["contactID"]), []).append(score)
+            for cid, scores in agg.items():
+                if cid in details:
+                    details[cid]["_survey_avg"] = round(sum(scores) / len(scores), 1)
+                    details[cid]["_survey_count"] = len(scores)
+        except Exception as exc:
+            log.info("Survey results unavailable: %s", exc)
     except Exception as exc:  # degrade to IDs-only rather than failing the page
         log.warning("Contacts page enrichment unavailable: %s", exc)
 
@@ -565,6 +629,8 @@ async def contacts(
             "phone": d.get("phone") or d.get("mobilePhone"),
             "company_id": company_id,
             "company_name": company_names.get(company_id or "", None),
+            "survey_avg": d.get("_survey_avg"),
+            "survey_count": d.get("_survey_count", 0),
         }
 
     return JSONResponse(

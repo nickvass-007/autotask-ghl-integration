@@ -98,6 +98,7 @@ async function banner(){try{const d=await api("/portal/api/overview");
 
 // ── Pages ──
 async function pageDashboard(){const d=await api("/portal/api/overview");const c=d.counts;
+  const w=d.work_24h||{},w7=d.work_7d||{},ad=d.approvals_decided||{};
   $("#page").innerHTML=`
   <div class="grid">
     <div class="stat"><b>${c.contacts_linked}</b>Contacts linked</div>
@@ -105,7 +106,16 @@ async function pageDashboard(){const d=await api("/portal/api/overview");const c
     <div class="stat"><b>${c.profiles}</b>Sync profiles</div>
     <div class="stat"><b>${c.pending_approvals}</b>Pending approvals</div>
     <div class="stat"><b>${c.jobs_running}</b>Jobs running</div>
+    <div class="stat"><b>${c.jobs_completed}</b>Jobs completed</div>
   </div>
+  <div class="card"><h2>Work done</h2><div class="scroll"><table>
+    <tr><th>Window</th><th class=right>Records created</th><th class=right>Updated</th><th class=right>Skipped</th><th class=right>Conflicts → approvals</th><th class=right>Errors</th><th class=right>Total operations</th></tr>
+    <tr><td>Last 24 hours</td><td class=right><b>${w.created??0}</b></td><td class=right>${w.updated??0}</td><td class=right>${w.skipped??0}</td><td class=right>${w.conflicts??0}</td><td class=right>${w.errors??0}</td><td class=right>${w.total??0}</td></tr>
+    <tr><td>Last 7 days</td><td class=right><b>${w7.created??0}</b></td><td class=right>${w7.updated??0}</td><td class=right>${w7.skipped??0}</td><td class=right>${w7.conflicts??0}</td><td class=right>${w7.errors??0}</td><td class=right>${w7.total??0}</td></tr>
+  </table></div>
+  <div class="row" style="margin-top:8px"><span class="muted">Human decisions:</span>
+    ${pill("approved")} <b>${ad.approved??0}</b> <span class="muted">·</span>
+    ${pill("failed")} <b>${ad.rejected??0}</b> rejected</div></div>
   <div class="card"><h2>Recent jobs</h2><div class="scroll"><table>
     <tr><th>#</th><th>Profile</th><th>Kind</th><th>Trigger</th><th>Status</th><th>Started</th><th>Duration</th><th>Result</th></tr>
     ${d.recent_jobs.map(j=>`<tr onclick="location.hash='job/${j.id}'" style="cursor:pointer">
@@ -135,12 +145,13 @@ async function pageContacts(){
   const page=Math.floor(d.offset/d.limit)+1;
   const from=d.total?d.offset+1:0, to=Math.min(d.offset+d.contacts.length,d.total);
   $("#page").innerHTML=`<div class="card"><h2>Synced contacts <span class="muted">(${d.total} linked)</span></h2>
-  <div class="scroll"><table><tr><th>First name</th><th>Last name</th><th>Email</th><th>Phone</th><th>Company</th><th>Autotask ID</th><th>GHL ID</th><th>Last synced</th></tr>
+  <div class="scroll"><table><tr><th>First name</th><th>Last name</th><th>Email</th><th>Phone</th><th>Company</th><th>Survey</th><th>Autotask ID</th><th>GHL ID</th><th>Last synced</th></tr>
   ${d.contacts.map(c=>`<tr>
     <td>${esc(c.first_name||"—")}</td><td>${esc(c.last_name||"—")}</td>
     <td>${c.email?`<a href="mailto:${esc(c.email)}">${esc(c.email)}</a>`:"—"}</td>
     <td>${esc(c.phone||"—")}</td>
     <td>${c.company_id?`<a target="_blank" href="${AT_BASE}/Mvc/CRM/AccountDetail.mvc?accountId=${esc(c.company_id)}">${esc(c.company_name||c.company_id)}</a>`:"—"}</td>
+    <td>${c.survey_avg!=null?`<b>${c.survey_avg}</b> ★ <span class="muted">(${c.survey_count})</span>`:'<span class="muted">—</span>'}</td>
     <td><a target="_blank" href="${AT_BASE}/Mvc/CRM/ContactDetail.mvc?contactId=${esc(c.autotask_id)}">${esc(c.autotask_id)}</a></td>
     <td class="muted">${esc(c.ghl_id)}</td><td>${fmtDt(c.last_synced_at)}</td></tr>`).join("")}
   </table></div>
