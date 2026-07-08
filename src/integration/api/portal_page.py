@@ -458,15 +458,17 @@ async function pageJob(id){const j=await api(`/portal/api/jobs/${id}`);
     </table></div></div>`;
   if(j.status==="running"){clearTimeout(jobTimer);jobTimer=setTimeout(()=>{if(location.hash===`#job/${id}`)pageJob(id);},3000);}}
 
-async function pageApprovals(){const d=await api("/admin/data");
-  $("#page").innerHTML=`<div class="card"><h2>Pending approvals (${d.approvals.length})</h2>
-  ${d.approvals.map(a=>`<div class="card" style="margin:8px 0"><div class="row">#${a.id} ${pill(a.severity)} <b>${esc(a.type)}</b></div>
+async function pageApprovals(){const st=pgState("appr");
+  const d=await api(`/portal/api/approvals?offset=${st.offset}&limit=${st.limit}`);
+  $("#page").innerHTML=`<div class="card"><h2>Pending approvals <span class="muted">(${d.total} total)</span></h2>
+  ${!d.decide_enabled?'<div class="pill warn" style="margin-bottom:8px">read-only: set APPROVAL_CALLBACK_SECRET to decide</div>':""}
+  ${d.approvals.map(a=>`<div class="card" style="margin:8px 0"><div class="row">#${a.id} ${pill(a.severity)} <b>${esc(a.type)}</b> <span class="muted">${fmtDt(a.created_at)}</span></div>
     <div>${esc(a.reason)}</div><div class="muted">GHL ${esc(a.ghl_id||"—")} · AT ${esc(a.autotask_id||"—")}</div>
     <details><summary class="muted">proposed change</summary><pre>${esc(JSON.stringify(a.proposed_change,null,2))}</pre></details>
     <div class="row" style="margin-top:6px"><input id="ch-${a.id}" placeholder="chosen id (optional)" size="16">
-      <button class="btn success" onclick="decide(${a.id},'approve')">Approve</button>
-      <button class="btn danger" onclick="decide(${a.id},'reject')">Reject</button></div></div>`).join("")||"<span class=muted>Queue is empty.</span>"}
-  </div>`;}
+      <button class="btn success" ${d.decide_enabled?"":"disabled"} onclick="decide(${a.id},'approve')">Approve</button>
+      <button class="btn danger" ${d.decide_enabled?"":"disabled"} onclick="decide(${a.id},'reject')">Reject</button></div></div>`).join("")||"<span class=muted>Queue is empty.</span>"}
+  ${pager("appr",d,pageApprovals)}</div>`;}
 async function decide(id,decision){const chosen=$(`#ch-${id}`).value.trim();
   const body={decision,decided_by:"portal-operator"};if(chosen)body.chosen_id=chosen;
   try{const r=await fetch(`/approvals/${id}/decide`,{method:"POST",headers:{"Content-Type":"application/json","x-approval-token":token()},body:JSON.stringify(body)});

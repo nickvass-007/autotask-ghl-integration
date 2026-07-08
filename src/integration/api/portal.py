@@ -827,6 +827,49 @@ async def contact_detail(
     )
 
 
+@router.get("/portal/api/approvals")
+async def approvals_page(
+    request: Request, offset: int = 0, limit: int = 100, x_admin_token: str = Header(default="")
+) -> JSONResponse:
+    """Pending approvals, paginated. Mirrors /admin/data's approval shape but
+    with server-side offset/limit/total for the shared pager."""
+    _authorize(request, x_admin_token)
+    offset, limit = _page_params(offset, limit)
+    from sqlalchemy import func
+
+    env = get_settings().environment
+    with session_scope() as session:
+        base = select(ApprovalQueue).where(
+            ApprovalQueue.environment == env,
+            ApprovalQueue.status == ApprovalStatus.PENDING,
+        )
+        total = session.execute(select(func.count()).select_from(base.subquery())).scalar() or 0
+        rows = session.execute(
+            base.order_by(ApprovalQueue.created_at.desc()).offset(offset).limit(limit)
+        ).scalars()
+        return JSONResponse(
+            {
+                "total": total,
+                "offset": offset,
+                "limit": limit,
+                "decide_enabled": bool(get_settings().approval_callback_secret),
+                "approvals": [
+                    {
+                        "id": a.id,
+                        "type": _enum_val(a.approval_type),
+                        "severity": _enum_val(a.severity),
+                        "reason": a.detected_reason,
+                        "autotask_id": a.autotask_id,
+                        "ghl_id": a.ghl_id,
+                        "proposed_change": a.proposed_change,
+                        "created_at": _iso(a.created_at),
+                    }
+                    for a in rows
+                ],
+            }
+        )
+
+
 @router.get("/portal/api/customers/{account_id}/detail")
 async def customer_detail(
     account_id: str, request: Request, x_admin_token: str = Header(default="")
