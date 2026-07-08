@@ -35,10 +35,22 @@ Australia/Sydney (portal setting). Weekend/overnight suppression settings
 shift slots to the next allowed time. `ENABLE_SCHEDULER=false` disables the
 loop entirely.
 
+## Later additions (2026-07-08 evening)
+- Contact detail view (click a row): profile, sync history, Autotask link,
+  and per-record **Enable/Disable sync** (``sync_exclusions``, migration 0006 —
+  enforced in the outbound filter for contacts AND whole accounts).
+- Contacts search (name/email via Autotask contains-query) + pagination.
+- Dashboard: Work Done digests (24h/7d), 14-day stacked activity chart,
+  approve/reject tallies.
+- Form-based criteria editor (picklist labels) and schedule editor.
+- ``POST /portal/api/approvals/bulk-reject-echoes`` — clears echo approvals.
+- Webhook notifications: set the ``notify_webhook_url`` setting to a Teams
+  incoming-webhook URL; fires on live-sync completion/failure and
+  review-pauses. Email delivery still not wired.
+
 ## Known limitations
-- Notifications are placeholder settings only (`notify_email`,
-  `notify_webhook_url`) — no delivery infra exists yet.
-- Criteria/schedule editors are prompt-based (functional, not polished).
 - Customer "already linked" status keys off COMPANY mappings, which populate
   once the businesses sync runs (needs `businesses.*` scopes).
 - Opportunities/contracts/invoices pages (Phase 4) intentionally not built yet.
+- Survey scores read Autotask ``SurveyResults`` and degrade silently if the
+  entity is not enabled on the account.
