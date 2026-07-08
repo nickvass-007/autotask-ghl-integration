@@ -89,6 +89,25 @@ async function api(path,opts={}){
 const fmtDt=s=>s?s.replace("T"," ").slice(0,16):"—";
 const pill=(v)=>`<span class="pill ${esc(String(v||"").toLowerCase())}">${esc(v??"—")}</span>`;
 let AT_BASE="https://ww29.autotask.net";
+// Shared pagination state + footer. Every list page registers under a key.
+const pg={};
+function pgState(key){return pg[key]??=({offset:0,limit:100});}
+function pager(key,d,reload){
+  const st=pgState(key);st.offset=d.offset;st.limit=d.limit;
+  const pages=Math.max(1,Math.ceil(d.total/d.limit));
+  const page=Math.floor(d.offset/d.limit)+1;
+  const from=d.total?d.offset+1:0,to=Math.min(d.offset+d.limit,d.total);
+  window[`pgNav_${key}`]=(dir)=>{st.offset=Math.max(0,st.offset+dir*st.limit);reload();};
+  window[`pgSize_${key}`]=(n)=>{st.limit=Number(n);st.offset=0;reload();};
+  return `<div class="row" style="margin-top:12px;justify-content:space-between">
+    <span class="muted">Showing <b>${from}–${to}</b> of <b>${d.total}</b> records</span>
+    <span class="row">
+      <button class="btn" ${page<=1?"disabled":""} onclick="pgNav_${key}(-1)">‹ Prev</button>
+      <span>Page <b>${page}</b> of <b>${pages}</b></span>
+      <button class="btn" ${page>=pages?"disabled":""} onclick="pgNav_${key}(1)">Next ›</button>
+      <select onchange="pgSize_${key}(this.value)">
+        ${[50,100,200].map(n=>`<option value="${n}" ${n===d.limit?"selected":""}>${n} / page</option>`).join("")}
+      </select></span></div>`;}
 const atLink=id=>id?`<a target="_blank" href="${AT_BASE}/Mvc/CRM/AccountDetail.mvc?accountId=${esc(id)}">${esc(id)}</a>`:"—";
 
 async function banner(){try{const d=await api("/portal/api/overview");
@@ -144,8 +163,13 @@ async function renderTrend(){try{
 }catch(e){$("#trend").textContent="trend unavailable: "+e.message;}}
 
 async function pageCustomers(){const profiles=(await api("/portal/api/profiles")).profiles;
-  const sel=location.hash.split("?p=")[1]||"";
-  const d=await api("/portal/api/customers"+(sel?`?profile_id=${sel}`:""));AT_BASE=d.autotask_web_base;
+  const sel=location.hash.split("?p=")[1]||"";const st=pgState("cust");
+  let d=await api("/portal/api/customers"+(sel?`?profile_id=${sel}`:`?offset=${st.offset}&limit=${st.limit}`));
+  AT_BASE=d.autotask_web_base;
+  if(sel){ // dry-run preview arrives whole — paginate client-side
+    const all=d.customers;
+    d={...d,total:all.length,offset:Math.min(st.offset,Math.max(0,all.length-1)),limit:st.limit,
+       customers:all.slice(st.offset,st.offset+st.limit)};}
   $("#page").innerHTML=`<div class="card"><div class="row"><h2>Customers</h2>
     <select id="cprof" onchange="location.hash='customers?p='+this.value">
       <option value="">Synced companies (linked)</option>
@@ -154,15 +178,12 @@ async function pageCustomers(){const profiles=(await api("/portal/api/profiles")
     <div class="scroll"><table><tr><th>Autotask ID</th><th>Name</th><th>Type</th><th>Classification</th><th>Status</th></tr>
     ${d.customers.map(c=>`<tr><td>${atLink(c.id)}</td><td>${esc(c.name||"—")}</td><td>${esc(c.type||"—")}</td>
       <td>${esc(c.classification||"—")}</td><td>${c.linked?pill("linked"):pill("new")}${c.ghl_id?` <span class="muted">GHL ${esc(c.ghl_id)}</span>`:""}</td></tr>`).join("")||"<tr><td colspan=5 class=muted>No rows — run a dry-run on a profile or sync companies.</td></tr>"}
-    </table></div></div>`;}
+    </table></div>${pager("cust",d,pageCustomers)}</div>`;}
 
-let contactsPage={offset:0,limit:100,q:""};
+let contactsQ="";
 async function pageContacts(){
-  const {offset,limit,q}=contactsPage;
-  const d=await api(`/portal/api/contacts?offset=${offset}&limit=${limit}&q=${encodeURIComponent(q)}`);AT_BASE=d.autotask_web_base;
-  const pages=Math.max(1,Math.ceil(d.total/d.limit));
-  const page=Math.floor(d.offset/d.limit)+1;
-  const from=d.total?d.offset+1:0, to=Math.min(d.offset+d.contacts.length,d.total);
+  const st=pgState("contacts");const q=contactsQ;
+  const d=await api(`/portal/api/contacts?offset=${st.offset}&limit=${st.limit}&q=${encodeURIComponent(q)}`);AT_BASE=d.autotask_web_base;
   $("#page").innerHTML=`<div class="card"><div class="row"><h2>Synced contacts <span class="muted">(${d.total}${q?" matching":" linked"})</span></h2>
     <input id="csearch" placeholder="Search name or email…" value="${esc(q)}" size="26"
       onkeydown="if(event.key==='Enter')contactsSearch(this.value)">
@@ -178,20 +199,8 @@ async function pageContacts(){
     <td><a target="_blank" href="${AT_BASE}/Mvc/CRM/ContactDetail.mvc?contactId=${esc(c.autotask_id)}">${esc(c.autotask_id)}</a></td>
     <td class="muted">${esc(c.ghl_id)}</td><td>${fmtDt(c.last_synced_at)}</td></tr>`).join("")}
   </table></div>
-  <div class="row" style="margin-top:12px;justify-content:space-between">
-    <span class="muted">Showing <b>${from}–${to}</b> of <b>${d.total}</b> records</span>
-    <span class="row">
-      <button class="btn" ${page<=1?"disabled":""} onclick="contactsNav(-1)">‹ Prev</button>
-      <span>Page <b>${page}</b> of <b>${pages}</b></span>
-      <button class="btn" ${page>=pages?"disabled":""} onclick="contactsNav(1)">Next ›</button>
-      <select onchange="contactsPerPage(this.value)">
-        ${[50,100,200].map(n=>`<option value="${n}" ${n===d.limit?"selected":""}>${n} / page</option>`).join("")}
-      </select>
-    </span>
-  </div></div>`;}
-function contactsNav(dir){contactsPage.offset=Math.max(0,contactsPage.offset+dir*contactsPage.limit);pageContacts();}
-function contactsPerPage(n){contactsPage.limit=Number(n);contactsPage.offset=0;pageContacts();}
-function contactsSearch(q){contactsPage.q=q.trim();contactsPage.offset=0;pageContacts();}
+  ${pager("contacts",d,pageContacts)}</div>`;}
+function contactsSearch(q){contactsQ=q.trim();pgState("contacts").offset=0;pageContacts();}
 
 async function showContact(id){
   const d=await api(`/portal/api/contacts/${id}/detail`);AT_BASE=d.autotask_web_base;
@@ -358,13 +367,14 @@ async function exportDryRun(id){const p=await api(`/portal/api/profiles/${id}`);
   const blob=new Blob([JSON.stringify({profile:p.name,summary:p.last_dry_run_summary,exported:new Date().toISOString()},null,2)],{type:"application/json"});
   const a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download=`dryrun-${p.name.replace(/\W+/g,"-")}.json`;a.click();}
 
-async function pageJobs(){const d=await api("/portal/api/jobs");
+async function pageJobs(){const st=pgState("jobs");
+  const d=await api(`/portal/api/jobs?offset=${st.offset}&limit=${st.limit}`);
   $("#page").innerHTML=`<div class="card"><h2>Sync Jobs</h2><div class="scroll"><table>
   <tr><th>#</th><th>Profile</th><th>Kind</th><th>Trigger</th><th>By</th><th>Status</th><th>Started</th><th>Duration</th><th></th></tr>
   ${d.jobs.map(j=>`<tr><td>${j.id}</td><td>${j.profile_id??"—"}</td><td>${pill(j.kind)}</td><td>${pill(j.trigger)}</td>
     <td>${esc(j.started_by||"—")}</td><td>${pill(j.status)}</td><td>${fmtDt(j.started_at)}</td><td>${j.duration_s??"—"}s</td>
     <td><a href="#job/${j.id}">logs</a>${j.status==="running"?` <button class="btn danger" onclick="cancelJob(${j.id})">Stop</button>`:""}</td></tr>`).join("")}
-  </table></div></div>`;}
+  </table></div>${pager("jobs",d,pageJobs)}</div>`;}
 async function cancelJob(id){await api(`/portal/api/jobs/${id}/cancel`,{method:"POST"});toast("Cancel requested.");setTimeout(()=>route(),2500);}
 
 let jobTimer=null;
@@ -399,12 +409,13 @@ async function decide(id,decision){const chosen=$(`#ch-${id}`).value.trim();
   try{const r=await fetch(`/approvals/${id}/decide`,{method:"POST",headers:{"Content-Type":"application/json","x-approval-token":token()},body:JSON.stringify(body)});
   const out=await r.json();if(!r.ok)throw new Error(out.detail);toast(`#${id} → ${out.action}`);route();}catch(e){toast("Failed: "+e.message);}}
 
-async function pageLogs(){const d=await api("/portal/api/logs");
+async function pageLogs(){const st=pgState("logs");
+  const d=await api(`/portal/api/logs?offset=${st.offset}&limit=${st.limit}`);
   $("#page").innerHTML=`<div class="card"><h2>Transaction log</h2><div class="scroll"><table>
   <tr><th>Time</th><th>Dir</th><th>Op</th><th>Status</th><th>Entity</th><th>Summary</th></tr>
   ${d.logs.map(l=>`<tr><td>${fmtDt(l.timestamp)}</td><td class="muted">${esc(l.direction)}</td><td>${esc(l.operation)}</td>
     <td>${pill(l.status)}</td><td class="muted">${esc(l.entity_type)} ${esc(l.entity_ref||"")}</td><td>${esc(l.summary)}</td></tr>`).join("")}
-  </table></div></div>`;}
+  </table></div>${pager("logs",d,pageLogs)}</div>`;}
 
 async function pageSettings(){const d=await api("/portal/api/settings");const s=d.settings;
   const fields=Object.entries(s).map(([k,v])=>`<tr><td>${esc(k)}</td><td><input id="set-${esc(k)}" value="${esc(v)}" size="34"></td></tr>`).join("");

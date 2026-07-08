@@ -433,17 +433,33 @@ async def set_schedule(pid: int, request: Request, x_admin_token: str = Header(d
 
 
 # ── Jobs ──────────────────────────────────────────────────────────────────────
+def _page_params(offset: int, limit: int) -> tuple[int, int]:
+    return max(0, offset), (limit if limit in (50, 100, 200) else 100)
+
+
 @router.get("/portal/api/jobs")
 async def list_jobs(
-    request: Request, profile_id: int | None = None, x_admin_token: str = Header(default="")
+    request: Request,
+    profile_id: int | None = None,
+    offset: int = 0,
+    limit: int = 100,
+    x_admin_token: str = Header(default=""),
 ) -> JSONResponse:
     _authorize(request, x_admin_token)
+    offset, limit = _page_params(offset, limit)
+    from sqlalchemy import func
+
     with session_scope() as session:
-        stmt = select(SyncJob).where(SyncJob.environment == get_settings().environment)
+        base = select(SyncJob).where(SyncJob.environment == get_settings().environment)
         if profile_id is not None:
-            stmt = stmt.where(SyncJob.profile_id == profile_id)
-        rows = session.execute(stmt.order_by(SyncJob.created_at.desc()).limit(100)).scalars()
-        return JSONResponse({"jobs": [_job_dict(j) for j in rows]})
+            base = base.where(SyncJob.profile_id == profile_id)
+        total = session.execute(select(func.count()).select_from(base.subquery())).scalar() or 0
+        rows = session.execute(
+            base.order_by(SyncJob.created_at.desc()).offset(offset).limit(limit)
+        ).scalars()
+        return JSONResponse(
+            {"jobs": [_job_dict(j) for j in rows], "total": total, "offset": offset, "limit": limit}
+        )
 
 
 @router.get("/portal/api/jobs/{jid}")
@@ -501,18 +517,26 @@ async def customers(
                  "autotask_web_base": settings["autotask_web_base"]}
             )
         # Default view: every Account with a COMPANY mapping (i.e. synced).
+        from sqlalchemy import func
+
+        offset, limit = _page_params(
+            int(request.query_params.get("offset", 0)),
+            int(request.query_params.get("limit", 100)),
+        )
+        base = select(EntityMapping).where(
+            EntityMapping.environment == get_settings().environment,
+            EntityMapping.canonical_entity_type == CanonicalEntityType.COMPANY,
+        )
+        total = session.execute(select(func.count()).select_from(base.subquery())).scalar() or 0
         rows = session.execute(
-            select(EntityMapping)
-            .where(
-                EntityMapping.environment == get_settings().environment,
-                EntityMapping.canonical_entity_type == CanonicalEntityType.COMPANY,
-            )
-            .order_by(EntityMapping.last_synced_at.desc())
-            .limit(500)
+            base.order_by(EntityMapping.last_synced_at.desc()).offset(offset).limit(limit)
         ).scalars()
         return JSONResponse(
             {
                 "source": "synced companies",
+                "total": total,
+                "offset": offset,
+                "limit": limit,
                 "customers": [
                     {"id": r.autotask_id, "ghl_id": r.ghl_id, "linked": True,
                      "last_synced_at": _iso(r.last_synced_at)}
@@ -669,19 +693,25 @@ async def contacts(
 # ── Logs & settings ───────────────────────────────────────────────────────────
 @router.get("/portal/api/logs")
 async def logs(
-    request: Request, offset: int = 0, x_admin_token: str = Header(default="")
+    request: Request, offset: int = 0, limit: int = 100, x_admin_token: str = Header(default="")
 ) -> JSONResponse:
     _authorize(request, x_admin_token)
+    offset, limit = _page_params(offset, limit)
+    from sqlalchemy import func
+
     with session_scope() as session:
+        base = select(TransactionLog).where(
+            TransactionLog.environment == get_settings().environment
+        )
+        total = session.execute(select(func.count()).select_from(base.subquery())).scalar() or 0
         rows = session.execute(
-            select(TransactionLog)
-            .where(TransactionLog.environment == get_settings().environment)
-            .order_by(TransactionLog.timestamp.desc())
-            .offset(offset)
-            .limit(100)
+            base.order_by(TransactionLog.timestamp.desc()).offset(offset).limit(limit)
         ).scalars()
         return JSONResponse(
             {
+                "total": total,
+                "offset": offset,
+                "limit": limit,
                 "logs": [
                     {
                         "timestamp": _iso(t.timestamp),
