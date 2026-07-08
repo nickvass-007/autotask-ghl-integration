@@ -56,6 +56,22 @@ input,select,textarea{border:1px solid var(--brand-border);border-radius:7px;pad
 .scroll{overflow-x:auto}
 a{color:var(--brand-accent)} pre{background:var(--brand-bg);border-radius:7px;padding:9px;overflow-x:auto;font-size:12px}
 #toast{position:fixed;bottom:18px;right:18px;background:var(--brand-panel-2);border:1px solid var(--brand-border);border-radius:9px;padding:10px 16px;display:none;max-width:420px}
+th.sortable{cursor:pointer;user-select:none} th.sortable:hover{color:var(--brand-text)}
+.skel{height:14px;border-radius:5px;background:linear-gradient(90deg,var(--brand-panel-2) 25%,var(--brand-border) 50%,var(--brand-panel-2) 75%);background-size:200% 100%;animation:sh 1.2s infinite;margin:9px 0}
+@keyframes sh{from{background-position:200% 0}to{background-position:-200% 0}}
+#modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.55);display:none;align-items:center;justify-content:center;z-index:50}
+#modal{background:var(--brand-panel);border:1px solid var(--brand-border);border-radius:12px;padding:20px;max-width:440px;width:92%}
+@media (max-width:900px){
+  body{flex-direction:column}
+  aside{width:100%;padding:8px 0;position:sticky;top:0;z-index:40}
+  .logo{padding:4px 14px 8px;margin-bottom:4px}
+  nav{display:flex;overflow-x:auto;white-space:nowrap}
+  nav a{padding:8px 12px;border-left:none;border-bottom:3px solid transparent}
+  nav a.active,nav a:hover{border-left:none;border-bottom-color:var(--brand-accent)}
+  aside>div:last-child{display:none}
+  main{padding:14px}
+  .grid{grid-template-columns:repeat(auto-fit,minmax(130px,1fr))}
+}
 </style>
 </head>
 <body>
@@ -75,12 +91,29 @@ a{color:var(--brand-accent)} pre{background:var(--brand-bg);border-radius:7px;pa
 </aside>
 <main><div id="banner" class="banner">…</div><div id="page"></div></main>
 <div id="toast"></div>
+<div id="modal-bg"><div id="modal"><div id="modal-msg" style="margin-bottom:14px"></div>
+  <div class="row" style="justify-content:flex-end"><button class="btn" id="modal-no">Cancel</button>
+  <button class="btn danger" id="modal-yes">Confirm</button></div></div></div>
 <script>
 const $=s=>document.querySelector(s);
 const esc=s=>String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const token=()=>localStorage.getItem("opsToken")||"";
 function saveToken(){localStorage.setItem("opsToken",$("#token").value.trim());route();}
 function toast(msg){const t=$("#toast");t.textContent=msg;t.style.display="block";setTimeout(()=>t.style.display="none",4200);}
+function confirmBox(msg){return new Promise(res=>{const bg=$("#modal-bg");
+  $("#modal-msg").textContent=msg;bg.style.display="flex";
+  $("#modal-yes").onclick=()=>{bg.style.display="none";res(true);};
+  $("#modal-no").onclick=()=>{bg.style.display="none";res(false);};});}
+const skeleton=`<div class="card">${'<div class="skel"></div>'.repeat(6)}</div>`;
+function makeSortable(){document.querySelectorAll("#page table").forEach(tbl=>{
+  const head=tbl.rows[0];if(!head)return;
+  [...head.cells].forEach((th,i)=>{th.classList.add("sortable");th.title="Click to sort";
+    th.onclick=()=>{const dir=th.dataset.d==="1"?-1:1;th.dataset.d=dir===1?"1":"-1";
+      const rows=[...tbl.rows].slice(1);
+      rows.sort((a,b)=>{const x=a.cells[i]?.innerText.trim()||"",y=b.cells[i]?.innerText.trim()||"";
+        const nx=parseFloat(x.replace(/[^\d.-]/g,"")),ny=parseFloat(y.replace(/[^\d.-]/g,""));
+        return (!isNaN(nx)&&!isNaN(ny)?nx-ny:x.localeCompare(y))*dir;});
+      rows.forEach(r=>tbl.tBodies[0]?tbl.tBodies[0].appendChild(r):tbl.appendChild(r));};});});}
 async function api(path,opts={}){
   const r=await fetch(path,{...opts,headers:{"Content-Type":"application/json","x-admin-token":token(),...(opts.headers||{})}});
   if(!r.ok){const d=await r.json().catch(()=>({detail:r.status}));throw new Error(d.detail||r.status);}
@@ -176,7 +209,7 @@ async function pageCustomers(){const profiles=(await api("/portal/api/profiles")
       ${profiles.map(p=>`<option value="${p.id}" ${String(p.id)===sel?"selected":""}>Dry-run: ${esc(p.name)}</option>`).join("")}
     </select><span class="muted">source: ${esc(d.source)}</span></div>
     <div class="scroll"><table><tr><th>Autotask ID</th><th>Name</th><th>Type</th><th>Classification</th><th>Status</th></tr>
-    ${d.customers.map(c=>`<tr><td>${atLink(c.id)}</td><td>${esc(c.name||"—")}</td><td>${esc(c.type||"—")}</td>
+    ${d.customers.map(c=>`<tr onclick="location.hash='customer/${esc(c.id)}'" style="cursor:pointer"><td>${atLink(c.id)}</td><td>${esc(c.name||"—")}</td><td>${esc(c.type||"—")}</td>
       <td>${esc(c.classification||"—")}</td><td>${c.linked?pill("linked"):pill("new")}${c.ghl_id?` <span class="muted">GHL ${esc(c.ghl_id)}</span>`:""}</td></tr>`).join("")||"<tr><td colspan=5 class=muted>No rows — run a dry-run on a profile or sync companies.</td></tr>"}
     </table></div>${pager("cust",d,pageCustomers)}</div>`;}
 
@@ -265,7 +298,7 @@ async function pageProfile(id){const p=await api(`/portal/api/profiles/${id}`);c
       <button class="btn" onclick="editCriteria(${p.id})">Edit criteria</button>
       <button class="btn" onclick="editSchedule(${p.id})">Edit schedule</button>
       <button class="btn" onclick="api('/portal/api/profiles/${p.id}/duplicate',{method:'POST'}).then(x=>location.hash='profile/'+x.id)">Duplicate</button>
-      <button class="btn danger" onclick="if(confirm('Delete profile?'))api('/portal/api/profiles/${p.id}',{method:'DELETE'}).then(()=>location.hash='profiles')">Delete</button>
+      <button class="btn danger" onclick="confirmBox('Delete this profile and its schedule?').then(ok=>ok&&api('/portal/api/profiles/${p.id}',{method:'DELETE'}).then(()=>location.hash='profiles'))">Delete</button>
     </div>
     ${p.review_reason?`<div class="pill warn" style="margin-bottom:8px">⚠ ${esc(p.review_reason)}</div>`:""}
     <div class="grid">
@@ -299,8 +332,38 @@ async function pageProfile(id){const p=await api(`/portal/api/profiles/${id}`);c
       <td class="muted">${esc(JSON.stringify(j.summary||{}).slice(0,90))}</td></tr>`).join("")||"<tr><td colspan=8 class=muted>Never run.</td></tr>"}
   </table></div></div>`;}
 
+async function showCustomer(id){
+  const d=await api(`/portal/api/customers/${id}/detail`);AT_BASE=d.autotask_web_base;
+  const a=d.account||{};
+  $("#page").innerHTML=`<div class="card"><div class="row">
+    <button class="btn" onclick="location.hash='customers'">← Back</button>
+    <h2>${esc(a.name||id)}</h2>${a.active?pill("enabled")+" active":pill("disabled")+" inactive"}
+    ${d.excluded?pill("disabled")+" sync disabled":pill("enabled")+" syncing"}</div>
+    <div class="grid" style="margin-top:10px">
+      <div class="stat"><b>${esc(a.type||"—")}</b>Customer type</div>
+      <div class="stat"><b>${esc(a.classification||"—")}</b>Classification</div>
+      <div class="stat"><b>${a.website?`<a target="_blank" href="//${esc(a.website)}">${esc(a.website)}</a>`:"—"}</b>Website</div>
+      <div class="stat"><b>${esc(d.ghl_business_id||"not yet synced")}</b>GHL Business</div>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <a class="btn" target="_blank" href="${AT_BASE}/Mvc/CRM/AccountDetail.mvc?accountId=${esc(d.autotask_id)}">Open in Autotask</a>
+      ${d.excluded
+        ?`<button class="btn success" onclick="api('/portal/api/exclusions/account/${esc(d.autotask_id)}',{method:'DELETE'}).then(()=>showCustomer('${esc(d.autotask_id)}'))">Enable sync</button>`
+        :`<button class="btn danger" onclick="confirmBox('Disable sync for this whole account? None of its contacts will mirror.').then(ok=>ok&&api('/portal/api/exclusions',{method:'POST',body:JSON.stringify({entity_type:'account',autotask_id:'${esc(d.autotask_id)}',reason:'portal customer view'})}).then(()=>showCustomer('${esc(d.autotask_id)}')))">Disable sync</button>`}
+    </div></div>
+  <div class="card"><h2>Contacts (${d.contacts.length})</h2><div class="scroll"><table>
+    <tr><th>Name</th><th>Email</th><th>Active</th><th>Synced to GHL</th><th></th></tr>
+    ${d.contacts.map(c=>`<tr><td>${esc(c.name||"—")}</td><td>${esc(c.email||"—")}</td>
+      <td>${c.active?pill("ok"):pill("disabled")}</td><td>${c.ghl_id?pill("linked"):pill("new")}</td>
+      <td><a href="#" onclick="event.preventDefault();showContact('${esc(c.autotask_id)}')">detail</a></td></tr>`).join("")||"<tr><td colspan=5 class=muted>No contacts.</td></tr>"}
+  </table></div></div>
+  <div class="card"><h2>Sync history</h2><div class="scroll"><table>
+    <tr><th>Time</th><th>Op</th><th>Status</th><th>Summary</th></tr>
+    ${d.history.map(h=>`<tr><td>${fmtDt(h.timestamp)}</td><td>${esc(h.operation)}</td><td>${pill(h.status)}</td><td>${esc(h.summary)}</td></tr>`).join("")||"<tr><td colspan=4 class=muted>No history yet.</td></tr>"}
+  </table></div></div>`;makeSortable();}
+
 async function dryRun(id){await api(`/portal/api/profiles/${id}/dry-run`,{method:"POST"});toast("Dry-run started — refresh in a few seconds.");setTimeout(()=>route(),6000);}
-async function liveRun(id){if(!confirm("Run LIVE sync now? Writes to GHL."))return;
+async function liveRun(id){if(!await confirmBox("Run LIVE sync now? This writes to GHL."))return;
   try{await api(`/portal/api/profiles/${id}/run`,{method:"POST"});toast("Live sync started.");setTimeout(()=>route(),4000);}catch(e){toast("Blocked: "+e.message);}}
 async function approveProfile(id){try{await api(`/portal/api/profiles/${id}/approve`,{method:"POST",body:"{}"});toast("Approved for live sync.");route();}catch(e){toast(e.message);}}
 let critFieldOpts=null;
@@ -427,13 +490,22 @@ async function saveSettings(keys){const settings={};keys.forEach(k=>settings[k]=
 
 // ── Router ──
 const routes={dashboard:pageDashboard,customers:pageCustomers,contacts:pageContacts,profiles:pageProfiles,jobs:pageJobs,approvals:pageApprovals,logs:pageLogs,settings:pageSettings};
+let autoTimer=null;
 async function route(){await banner();const h=(location.hash||"#dashboard").slice(1);
   document.querySelectorAll("#nav a").forEach(a=>a.classList.toggle("active",a.getAttribute("href")==="#"+h.split("/")[0].split("?")[0]));
+  $("#page").innerHTML=skeleton;
   try{
-    if(h.startsWith("profile/"))return await pageProfile(Number(h.split("/")[1]));
-    if(h.startsWith("job/"))return await pageJob(Number(h.split("/")[1]));
-    await (routes[h.split("?")[0]]||pageDashboard)();
-  }catch(e){$("#page").innerHTML=`<div class="card"><span class="pill bad">error</span> ${esc(e.message)}</div>`;}}
+    if(h.startsWith("profile/"))await pageProfile(Number(h.split("/")[1]));
+    else if(h.startsWith("job/"))await pageJob(Number(h.split("/")[1]));
+    else if(h.startsWith("customer/"))await showCustomer(h.split("/")[1]);
+    else await (routes[h.split("?")[0]]||pageDashboard)();
+  }catch(e){$("#page").innerHTML=`<div class="card"><span class="pill bad">error</span> ${esc(e.message)}</div>`;}
+  makeSortable();
+  // Live refresh: dashboard + jobs re-poll every 30s while visible.
+  clearInterval(autoTimer);const base=h.split("/")[0].split("?")[0];
+  if(["dashboard","jobs",""].includes(base))autoTimer=setInterval(async()=>{
+    if(document.hidden)return;
+    try{if(base==="jobs")await pageJobs();else await pageDashboard();makeSortable();}catch(e){}},30000);}
 window.addEventListener("hashchange",route);
 $("#token").value=token();route();
 </script>

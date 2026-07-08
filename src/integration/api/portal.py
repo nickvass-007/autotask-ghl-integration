@@ -827,6 +827,92 @@ async def contact_detail(
     )
 
 
+@router.get("/portal/api/customers/{account_id}/detail")
+async def customer_detail(
+    account_id: str, request: Request, x_admin_token: str = Header(default="")
+) -> JSONResponse:
+    _authorize(request, x_admin_token)
+    from ..sync.criteria import is_excluded
+
+    with session_scope() as session:
+        settings = get_portal_settings(session)
+        excluded = is_excluded(session, "account", account_id)
+        company_link = session.execute(
+            select(EntityMapping).where(
+                EntityMapping.environment == get_settings().environment,
+                EntityMapping.canonical_entity_type == CanonicalEntityType.COMPANY,
+                EntityMapping.autotask_id == account_id,
+            )
+        ).scalar_one_or_none()
+        history = [
+            {
+                "timestamp": _iso(t.timestamp),
+                "operation": _enum_val(t.operation),
+                "status": _enum_val(t.status),
+                "summary": t.summary,
+            }
+            for t in session.execute(
+                select(TransactionLog)
+                .where(TransactionLog.entity_ref == account_id)
+                .order_by(TransactionLog.timestamp.desc())
+                .limit(25)
+            ).scalars()
+        ]
+        contact_links = {
+            m.autotask_id: m.ghl_id
+            for m in session.execute(
+                select(EntityMapping).where(
+                    EntityMapping.environment == get_settings().environment,
+                    EntityMapping.canonical_entity_type == CanonicalEntityType.CONTACT,
+                )
+            ).scalars()
+        }
+
+    account: dict = {}
+    contacts: list[dict] = []
+    try:
+        autotask = await get_autotask()
+        raw = await autotask.get_account_raw(account_id) or {}
+        type_labels = await autotask.get_picklist_labels("Companies", "companyType")
+        class_labels = await autotask.get_picklist_labels("Companies", "classification")
+        account = {
+            "name": raw.get("companyName"),
+            "type": type_labels.get(str(raw.get("companyType")), raw.get("companyType")),
+            "classification": class_labels.get(str(raw.get("classification")), None),
+            "website": raw.get("webAddress"),
+            "active": bool(raw.get("isActive")),
+        }
+        resp = await autotask._client.post(
+            autotask._url("Contacts/query"),
+            headers=autotask._auth_headers(),
+            json={"filter": [{"op": "eq", "field": "companyID", "value": int(account_id)}],
+                  "MaxRecords": 200},
+        )
+        resp.raise_for_status()
+        for item in resp.json().get("items", []):
+            contacts.append({
+                "autotask_id": str(item["id"]),
+                "name": f"{item.get('firstName') or ''} {item.get('lastName') or ''}".strip(),
+                "email": item.get("emailAddress"),
+                "active": bool(item.get("isActive")),
+                "ghl_id": contact_links.get(str(item["id"])),
+            })
+    except Exception as exc:
+        log.warning("Customer detail enrichment unavailable: %s", exc)
+
+    return JSONResponse(
+        {
+            "autotask_id": account_id,
+            "account": account,
+            "excluded": excluded,
+            "ghl_business_id": company_link.ghl_id if company_link else None,
+            "contacts": contacts,
+            "history": history,
+            "autotask_web_base": settings["autotask_web_base"],
+        }
+    )
+
+
 @router.post("/portal/api/exclusions")
 async def add_exclusion(request: Request, x_admin_token: str = Header(default="")) -> JSONResponse:
     _authorize(request, x_admin_token)
