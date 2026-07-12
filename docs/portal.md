@@ -46,11 +46,14 @@ loop entirely.
 - ``POST /portal/api/approvals/bulk-reject-echoes`` — clears echo approvals.
 - Webhook notifications: set the ``notify_webhook_url`` setting to a Teams
   incoming-webhook URL; fires on live-sync completion/failure and
-  review-pauses. Email delivery still not wired.
+  review-pauses. Approval cards + BLOCKED/ERROR feed events post via
+  ``TEAMS_WORKFLOW_WEBHOOK_URL`` / the Ops bot (see docs/setup/teams-bot.md);
+  HIGH-severity approvals and breaker trips also email admins via Graph.
 
 ## Known limitations
-- Customer "already linked" status keys off COMPANY mappings, which populate
-  once the businesses sync runs (needs `businesses.*` scopes).
+- Customer "already linked" status keys off COMPANY mappings — the poller now
+  sweeps Accounts → GHL Businesses, so these populate once ``ENABLE_POLLER=true``
+  and the `businesses.*` scopes are granted.
 - Opportunities/contracts/invoices pages (Phase 4) intentionally not built yet.
 - Survey scores read Autotask ``SurveyResults`` and degrade silently if the
   entity is not enabled on the account.

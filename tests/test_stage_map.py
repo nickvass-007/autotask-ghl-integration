@@ -26,6 +26,31 @@ def test_closed_won_detection():
     assert smap.is_closed_won("pipe-service", "stage-won") is False
 
 
+def test_conversion_trigger_defaults_to_closed_won():
+    smap = make_stage_map()
+    assert smap.is_conversion_trigger("pipe-sales", "stage-won") is True
+    assert smap.is_conversion_trigger("pipe-sales", "stage-qualified") is False
+    assert smap.is_conversion_trigger("pipe-service", "stage-won") is False
+
+
+def test_conversion_trigger_configurable_earlier_stage():
+    base = make_stage_map()
+    sales = PipelineMap(
+        ghl_pipeline_id=base.sales.ghl_pipeline_id,
+        autotask_entity="opportunity",
+        stages=base.sales.stages,
+        closed_won_stage_id=base.sales.closed_won_stage_id,
+        conversion_stage_ids=("stage-qualified", "stage-won"),
+    )
+    smap = StageMap(sales=sales, service=base.service)
+    # The handoff can fire when a prospect is QUALIFIED, not only on closed-won.
+    assert smap.is_conversion_trigger("pipe-sales", "stage-qualified") is True
+    assert smap.is_conversion_trigger("pipe-sales", "stage-won") is True
+    assert smap.is_conversion_trigger("pipe-sales", "stage-new") is False
+    # closed-won detection itself is unchanged (outcome protection still keys off it)
+    assert smap.is_closed_won("pipe-sales", "stage-qualified") is False
+
+
 def test_pipeline_routing():
     smap = make_stage_map()
     assert smap.pipeline_for("pipe-sales").autotask_entity == "opportunity"

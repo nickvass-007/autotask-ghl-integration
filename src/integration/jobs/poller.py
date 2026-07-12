@@ -28,33 +28,41 @@ from ..db.models import SyncCursor
 from ..db.session import session_scope
 from ..sync.autotask_to_ghl import push_autotask_contact
 from ..sync.classification import sync_classifications
+from ..sync.companies import mirror_autotask_account
 from ..sync.criteria import AccountFilter
 from ..sync.mirrors import mirror_autotask_opportunity, mirror_autotask_ticket
+from ..sync.notes import mirror_ticket_note
 from ..sync.reconciliation import expire_stale_approvals, reconcile_contacts
 
 log = get_logger(__name__)
 
+# Companies sweep FIRST: the contact mirror attaches businessId from the COMPANY
+# mapping, so Accounts must be mirrored before their contacts in the same cycle.
 _POLL_ENTITIES = (
+    CanonicalEntityType.COMPANY,
     CanonicalEntityType.CONTACT,
     CanonicalEntityType.DEAL,
     CanonicalEntityType.SERVICE_ITEM,
 )
 
+# TicketNotes get their own cursor lane — they are not a canonical entity type.
+_NOTE_CURSOR_KEY = "ticket_note"
 
-def _get_cursor(session: Session, entity_type: CanonicalEntityType) -> SyncCursor:
+
+def _get_cursor(session: Session, entity_key: str) -> SyncCursor:
     env = get_settings().environment
     row = session.execute(
         select(SyncCursor).where(
             SyncCursor.environment == env,
             SyncCursor.source_system == System.AUTOTASK,
-            SyncCursor.entity_type == entity_type.value,
+            SyncCursor.entity_type == entity_key,
         )
     ).scalar_one_or_none()
     if row is None:
         row = SyncCursor(
             environment=env,
             source_system=System.AUTOTASK,
-            entity_type=entity_type.value,
+            entity_type=entity_key,
             cursor=None,
         )
         session.add(row)
@@ -69,13 +77,17 @@ async def poll_once(*, autotask, ghl) -> dict:
     for entity_type in _POLL_ENTITIES:
         processed = 0
         with session_scope() as session:
-            cursor_row = _get_cursor(session, entity_type)
+            cursor_row = _get_cursor(session, entity_type.value)
             # Customer sync criteria (admin UI) gate the outbound mirror.
             account_filter = AccountFilter(session, autotask)
             changes = await autotask.fetch_changes(entity_type, cursor=cursor_row.cursor)
             for entity in changes.entities:
                 try:
-                    if entity_type is CanonicalEntityType.CONTACT:
+                    if entity_type is CanonicalEntityType.COMPANY:
+                        if not await account_filter.allows_company(entity):
+                            continue  # excluded or outside the sync audience
+                        await mirror_autotask_account(session, company=entity, ghl=ghl)
+                    elif entity_type is CanonicalEntityType.CONTACT:
                         if not entity.extra.get("is_active", True):
                             continue  # inactive CONTACT — never mirrored outbound
                         if not await account_filter.allows_contact(entity):
@@ -102,8 +114,33 @@ async def poll_once(*, autotask, ghl) -> dict:
             cursor_row.cursor = changes.cursor
             cursor_row.updated_at = utcnow()
         summary[entity_type.value] = processed
+    summary["ticket_note"] = await _sweep_ticket_notes(autotask=autotask, ghl=ghl)
     log.info("Poll sweep complete: %s", summary)
     return summary
+
+
+async def _sweep_ticket_notes(*, autotask, ghl) -> int:
+    """Mirror new Autotask TicketNotes to the linked GHL contacts (§10.5).
+
+    ``mirror_ticket_note`` is idempotent and silently skips notes on tickets that
+    were never mirrored, so the sweep can safely walk every new note."""
+    processed = 0
+    with session_scope() as session:
+        cursor_row = _get_cursor(session, _NOTE_CURSOR_KEY)
+        notes, new_cursor = await autotask.fetch_ticket_note_changes(cursor=cursor_row.cursor)
+        for note in notes:
+            try:
+                action = await mirror_ticket_note(session, note=note, ghl=ghl)
+                if action == "created":
+                    processed += 1
+            except Exception:
+                session.rollback()  # same poisoned-transaction guard as the entity sweep
+                log.exception(
+                    "Poller: ticket note %s failed — continuing sweep", note.get("id")
+                )
+        cursor_row.cursor = new_cursor
+        cursor_row.updated_at = utcnow()
+    return processed
 
 
 async def reconcile_once(*, autotask, ghl) -> dict:

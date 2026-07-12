@@ -54,6 +54,16 @@ def _service_mapping_by_ghl(session: Session, ghl_card_id: str) -> EntityMapping
     return session.execute(stmt).scalar_one_or_none()
 
 
+def _contact_mapping_by_ghl(session: Session, ghl_contact_id: str) -> EntityMapping | None:
+    env = get_settings().environment
+    stmt = select(EntityMapping).where(
+        EntityMapping.environment == env,
+        EntityMapping.canonical_entity_type == CanonicalEntityType.CONTACT,
+        EntityMapping.ghl_id == ghl_contact_id,
+    )
+    return session.execute(stmt).scalar_one_or_none()
+
+
 async def mirror_ticket_note(
     session: Session,
     *,
@@ -159,6 +169,10 @@ async def push_ghl_note(
     result = await autotask.create_ticket_note(
         link.autotask_id, title=stamp, body=note_body
     )
+    return _record_push(session, correlation_id, note_id, link.autotask_id, result)
+
+
+def _record_push(session, correlation_id, note_id, ticket_id, result) -> str:
     record_transaction(
         session,
         correlation_id=correlation_id,
@@ -167,6 +181,90 @@ async def push_ghl_note(
         entity_type="note",
         entity_ref=result.external_id,
         status=TransactionStatus.SUCCESS if result.ok else TransactionStatus.ERROR,
-        summary=f"GHL note {note_id} appended to Autotask Ticket {link.autotask_id}",
+        summary=f"GHL note {note_id} appended to Autotask Ticket {ticket_id}",
+    )
+    return "created" if result.ok else "error"
+
+
+async def route_ghl_contact_note(
+    session: Session,
+    *,
+    ghl_contact_id: str,
+    note_id: str,
+    note_body: str,
+    autotask,
+    correlation_id: str | None = None,
+) -> str:
+    """Route a GHL contact note (NoteCreate webhook) to its Autotask ticket.
+
+    GHL notes live on CONTACTS, not on pipeline cards, so the webhook only tells
+    us the contact. Resolution: mapped contact → that contact's Autotask tickets →
+    intersect with the SERVICE_ITEM mappings (only mirrored tickets participate).
+    The newest mirrored ticket wins when several are linked — logged in the
+    transaction summary. A note must never create a ticket (§10.5)."""
+    correlation_id = correlation_id or new_correlation_id()
+    event_id = f"ghlnote:{note_id}"
+    if already_processed(session, event_id, System.GHL):
+        return "skipped"
+    mark_processed(session, event_id, System.GHL)
+
+    # Never echo back a note that originated in Autotask (loop guard).
+    if note_body.startswith(AT_NOTE_STAMP.split("{", 1)[0]):
+        return "skipped"
+
+    def _held(reason: str) -> str:
+        record_transaction(
+            session,
+            correlation_id=correlation_id,
+            direction=Direction.GHL_TO_AUTOTASK,
+            operation=Operation.SKIP,
+            entity_type="note",
+            entity_ref=note_id,
+            status=TransactionStatus.SKIPPED,
+            summary=f"GHL note {note_id} HELD — {reason} (§10.5)",
+        )
+        return "held"
+
+    contact_link = _contact_mapping_by_ghl(session, ghl_contact_id)
+    if contact_link is None or contact_link.autotask_id is None:
+        return _held(f"GHL contact {ghl_contact_id} has no linked Autotask Contact")
+
+    tickets = await autotask.find_tickets(contact_id=contact_link.autotask_id)
+    env = get_settings().environment
+    mirrored_ids = set(
+        session.execute(
+            select(EntityMapping.autotask_id).where(
+                EntityMapping.environment == env,
+                EntityMapping.canonical_entity_type == CanonicalEntityType.SERVICE_ITEM,
+                EntityMapping.autotask_id.in_([t.source_id for t in tickets] or [""]),
+            )
+        )
+        .scalars()
+        .all()
+    )
+    def _newest(tid: str):
+        # Autotask ids are numeric in practice; fall back to lexical for fakes.
+        return (1, int(tid), "") if tid.isdigit() else (0, 0, tid)
+
+    candidates = sorted((tid for tid in mirrored_ids if tid), key=_newest, reverse=True)
+    if not candidates:
+        return _held(
+            f"contact {contact_link.autotask_id} has no mirrored ticket and a note "
+            "must never create one"
+        )
+
+    ticket_id = candidates[0]
+    stamp = GHL_NOTE_STAMP.format(note_id=note_id)
+    result = await autotask.create_ticket_note(ticket_id, title=stamp, body=note_body)
+    picked = f" (newest of {len(candidates)} mirrored tickets)" if len(candidates) > 1 else ""
+    record_transaction(
+        session,
+        correlation_id=correlation_id,
+        direction=Direction.GHL_TO_AUTOTASK,
+        operation=Operation.CREATE if result.ok else Operation.ERROR,
+        entity_type="note",
+        entity_ref=result.external_id,
+        status=TransactionStatus.SUCCESS if result.ok else TransactionStatus.ERROR,
+        summary=f"GHL note {note_id} appended to Autotask Ticket {ticket_id}{picked}",
     )
     return "created" if result.ok else "error"

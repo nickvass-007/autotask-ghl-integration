@@ -86,22 +86,162 @@ def handle_command(text: str) -> str:
     )
 
 
+# ── Conversation reference store (for proactive approval cards) ───────────────
+# The bot can only post proactively into a channel it has already seen. We store
+# the latest conversation reference in the portal_settings KV table on every
+# inbound activity, so "add the bot to the ops channel and say hi" is the whole
+# setup ritual.
+_CONV_REF_KEY = "teams_conversation_ref"
+
+
+def store_conversation_reference(reference: dict) -> None:
+    import json
+
+    from ..db.models import PortalSetting
+
+    env = get_settings().environment
+    with session_scope() as session:
+        from sqlalchemy import select
+
+        row = session.execute(
+            select(PortalSetting).where(
+                PortalSetting.environment == env, PortalSetting.key == _CONV_REF_KEY
+            )
+        ).scalar_one_or_none()
+        if row is None:
+            row = PortalSetting(environment=env, key=_CONV_REF_KEY, value="{}")
+            session.add(row)
+        row.value = json.dumps(reference)
+
+
+def load_conversation_reference() -> dict | None:
+    import json
+
+    from sqlalchemy import select
+
+    from ..db.models import PortalSetting
+
+    env = get_settings().environment
+    with session_scope() as session:
+        row = session.execute(
+            select(PortalSetting).where(
+                PortalSetting.environment == env, PortalSetting.key == _CONV_REF_KEY
+            )
+        ).scalar_one_or_none()
+        return json.loads(row.value) if row and row.value else None
+
+
+# ── botbuilder wiring (lazy: the SDK is an optional extra, `pip install .[teams]`) ──
+def _build_adapter():
+    from botbuilder.integration.aiohttp import (
+        CloudAdapter,
+        ConfigurationBotFrameworkAuthentication,
+    )
+
+    s = get_settings()
+
+    class _Config:
+        APP_ID = s.teams_bot_app_id
+        APP_PASSWORD = s.teams_bot_app_password
+        APP_TYPE = "SingleTenant" if s.teams_bot_tenant_id else "MultiTenant"
+        APP_TENANTID = s.teams_bot_tenant_id or None
+
+    return CloudAdapter(ConfigurationBotFrameworkAuthentication(_Config()))
+
+
+async def _apply_card_decision(value: dict) -> str:
+    """Handle an Approve/Reject/Override card submit. The token in the card data
+    is verified against the shared secret so a spoofed submit cannot approve a
+    change (Spec §11.1)."""
+    s = get_settings()
+    token = str(value.get("token", ""))
+    if not s.approval_callback_secret or token != s.approval_callback_secret:
+        return "⚠️ Unverified decision — rejected (bad or missing token)."
+    approval_id = int(value.get("approval_id", 0))
+    decision = str(value.get("decision", ""))
+    if decision not in ("approve", "reject", "override"):
+        return f"Unknown decision {decision!r}."
+
+    from ..api.deps import get_autotask, get_ghl  # lazy: avoids an import cycle
+    from ..sync.decisions import apply_approval_decision
+
+    autotask = await get_autotask()
+    with session_scope() as session:
+        result = await apply_approval_decision(
+            session,
+            approval_id=approval_id,
+            decision=decision,
+            decided_by="teams-card",
+            autotask=autotask,
+            ghl=get_ghl(),
+            chosen_id=value.get("chosen_id") or None,
+        )
+    return f"Approval #{approval_id}: **{result.action}** (correlation {result.correlation_id})"
+
+
 def build_bot():
     """Construct the botbuilder ActivityHandler. Imported lazily (SDK optional)."""
     from botbuilder.core import ActivityHandler, TurnContext
-    from botbuilder.schema import ChannelAccount  # noqa: F401
 
     handle = handle_command
 
     class OpsBot(ActivityHandler):
+        async def on_turn(self, turn_context: "TurnContext") -> None:  # type: ignore[name-defined]
+            # Remember where we are so proactive approval cards have a target.
+            try:
+                ref = TurnContext.get_conversation_reference(turn_context.activity)
+                store_conversation_reference(ref.serialize())
+            except Exception:
+                log.exception("Could not store conversation reference")
+            await super().on_turn(turn_context)
+
         async def on_message_activity(self, turn_context: "TurnContext") -> None:  # type: ignore[name-defined]
             activity = turn_context.activity
             # Card button callback (Approve/Reject/Override) arrives as .value
             if activity.value:
-                await turn_context.send_activity(
-                    "Decision received — routing to the approval endpoint."
-                )
+                reply = await _apply_card_decision(dict(activity.value))
+                await turn_context.send_activity(reply)
                 return
-            await turn_context.send_activity(handle(activity.text or ""))
+            # Teams prefixes messages with the bot @mention — strip it.
+            text = TurnContext.remove_recipient_mention(activity) or activity.text or ""
+            await turn_context.send_activity(handle(text))
 
     return OpsBot()
+
+
+async def process_bot_activity(body: dict, auth_header: str):
+    """CloudAdapter entry point for POST /api/messages when the bot is configured.
+    Returns the botbuilder InvokeResponse (or None)."""
+    from botbuilder.schema import Activity
+
+    adapter = _build_adapter()
+    bot = build_bot()
+    activity = Activity().deserialize(body)
+    return await adapter.process_activity(auth_header, activity, bot.on_turn)
+
+
+async def send_proactive_card(card: dict) -> bool:
+    """Post an Adaptive Card into the stored conversation (the ops channel).
+    Returns False when the bot has never been spoken to / SDK missing."""
+    reference = load_conversation_reference()
+    if not reference:
+        log.info("No stored Teams conversation — say something to the bot first")
+        return False
+
+    from botbuilder.core import CardFactory, MessageFactory
+    from botbuilder.schema import ConversationReference
+
+    adapter = _build_adapter()
+    conv_ref = ConversationReference().deserialize(reference)
+    message = MessageFactory.attachment(CardFactory.adaptive_card(card))
+
+    async def _send(turn_context) -> None:
+        await turn_context.send_activity(message)
+
+    s = get_settings()
+    try:
+        await adapter.continue_conversation(conv_ref, _send, bot_app_id=s.teams_bot_app_id)
+    except TypeError:
+        # botbuilder signature drift across 4.x — older positional form.
+        await adapter.continue_conversation(s.teams_bot_app_id, conv_ref, _send)
+    return True

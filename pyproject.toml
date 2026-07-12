@@ -37,6 +37,11 @@ dev = [
 azuresql = [
     "pyodbc>=5.2",                   # installed only where Azure SQL is targeted
 ]
+teams = [
+    # CloudAdapter + ConfigurationBotFrameworkAuthentication for the live Azure
+    # Bot channel (proactive approval cards). Core/schema are already base deps.
+    "botbuilder-integration-aiohttp>=4.16",
+]
 
 [build-system]
 requires = ["hatchling"]

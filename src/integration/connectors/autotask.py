@@ -435,6 +435,19 @@ class AutotaskConnector(Connector):
         item = resp.json().get("item")
         return self._ticket_to_canonical(item) if item else None
 
+    async def find_tickets(self, *, contact_id: str) -> list[CanonicalServiceItem]:
+        """Tickets for an Autotask Contact — used to route inbound GHL notes to
+        the right (already-mirrored) ticket. Read-only."""
+        body = {"filter": [{"op": "eq", "field": "contactID", "value": int(contact_id)}]}
+        resp = await request_json(
+            self._client,  # type: ignore[arg-type]
+            "POST",
+            self._url("Tickets/query"),
+            headers=self._auth_headers(),
+            json=body,
+        )
+        return [self._ticket_to_canonical(i) for i in resp.json().get("items", [])]
+
     # ── Ticket notes (additive sync, Spec §10.5) ────────────────────────────────
     async def fetch_ticket_notes(self, ticket_id: str) -> list[dict]:
         resp = await request_json(
@@ -466,17 +479,40 @@ class AutotaskConnector(Connector):
 
     # ── Polling / webhooks ──────────────────────────────────────────────────────
     _POLL_ENTITY = {
+        CanonicalEntityType.COMPANY: "Companies",
         CanonicalEntityType.CONTACT: "Contacts",
         CanonicalEntityType.DEAL: "Opportunities",
         CanonicalEntityType.SERVICE_ITEM: "Tickets",
     }
 
     def _poll_to_canonical(self, entity_type: CanonicalEntityType, item: dict):
+        if entity_type is CanonicalEntityType.COMPANY:
+            return self._account_to_canonical(item)
         if entity_type is CanonicalEntityType.CONTACT:
             return self._to_canonical(item)
         if entity_type is CanonicalEntityType.DEAL:
             return self._deal_to_canonical(item)
         return self._ticket_to_canonical(item)
+
+    async def fetch_ticket_note_changes(self, *, cursor: str | None = None) -> tuple[list[dict], str | None]:
+        """New TicketNotes since the cursor (``id:<n>``). Notes are append-only in
+        our sync (§10.5) so an id sweep is sufficient — edits are never mirrored.
+        Returns (raw note items, new cursor)."""
+        raw = cursor.split(":", 1)[1] if cursor and ":" in cursor else (cursor or "0")
+        body = {
+            "filter": [{"op": "gt", "field": "id", "value": int(raw)}],
+            "MaxRecords": 500,
+        }
+        resp = await request_json(
+            self._client,  # type: ignore[arg-type]
+            "POST",
+            self._url("TicketNotes/query"),
+            headers=self._auth_headers(),
+            json=body,
+        )
+        items = resp.json().get("items", [])
+        new_cursor = f"id:{max(int(i['id']) for i in items)}" if items else cursor
+        return items, new_cursor
 
     async def fetch_changes(
         self, entity_type: CanonicalEntityType, *, cursor: str | None = None

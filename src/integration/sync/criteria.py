@@ -112,6 +112,18 @@ class AccountFilter:
             self._cache[account_id] = matches(raw, self._rules)
         return self._cache[account_id]
 
+    async def allows_company(self, company) -> bool:
+        """Gate for the Account → Business mirror: per-record exclusion first,
+        then the same Account-level rules as the contact mirror."""
+        if company is None:
+            return False
+        account_id = company.source_id or getattr(company, "company_id", None)
+        if is_excluded(self._session, "account", account_id):
+            return False
+        if not self._rules:
+            return True
+        return await self.allows_account(account_id)
+
     async def allows_contact(self, at_contact) -> bool:
         if at_contact is None:
             return False

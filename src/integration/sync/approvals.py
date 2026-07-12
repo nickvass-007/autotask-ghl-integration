@@ -24,6 +24,7 @@ from ..db.enums import (
     System,
 )
 from ..db.models import ApprovalQueue
+from ..teams.notify import announce_approval
 
 log = get_logger(__name__)
 
@@ -70,6 +71,8 @@ def raise_approval(session: Session, req: ApprovalRequest) -> ApprovalQueue:
         req.severity,
         req.detected_reason,
     )
+    # Teams card + (HIGH) admin email — fire-and-forget, never blocks the flow.
+    announce_approval(row)
     return row
 
 

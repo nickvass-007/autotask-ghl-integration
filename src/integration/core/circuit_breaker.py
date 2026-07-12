@@ -57,6 +57,17 @@ def trip(session: Session, reason: str, target: System = System.AUTOTASK) -> Non
     state.tripped_at = utcnow()
     state.reason = reason
     log.error("CIRCUIT BREAKER TRIPPED for %s: %s", target, reason)
+    # Alert loudly on every channel — a tripped breaker means writes are paused
+    # until a human resets it (Spec §5.5, §11). Best-effort, never raises.
+    try:
+        from ..teams.notify import _spawn, announce_event
+        from ..teams.alerts import send_admin_alert
+
+        message = f"⚠️ CIRCUIT BREAKER TRIPPED for {target}: {reason} — Autotask writes are PAUSED"
+        announce_event(message)
+        _spawn(send_admin_alert("Circuit breaker tripped — writes paused", message))
+    except Exception:
+        log.exception("Breaker alert failed (alerting only — breaker state is set)")
 
 
 def reset(session: Session, target: System = System.AUTOTASK) -> None:

@@ -58,6 +58,14 @@ class Settings(BaseSettings):
     teams_bot_app_password: str = ""
     teams_bot_tenant_id: str = ""
     approval_callback_secret: str = ""
+    # Teams Workflow (Power Automate) incoming-webhook URL — the no-bot-required
+    # transport for approval cards + the transaction feed. Cards posted this way
+    # deep-link to the portal for the actual decision (Action.Submit needs the bot).
+    teams_workflow_webhook_url: str = ""
+    # Post BLOCKED/ERROR transaction events to the Teams feed channel.
+    teams_feed_events: bool = True
+    # Public base URL of this API — used in Teams card deep-links to the portal.
+    public_base_url: str = "http://localhost:8000"
 
     # ── Microsoft Graph (backup email) ──
     graph_tenant_id: str = ""

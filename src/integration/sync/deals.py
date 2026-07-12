@@ -218,8 +218,9 @@ async def process_ghl_opportunity(
 
     approval_ids: list[int] = []
 
-    # 3) Stage C — closed-won IS the conversion/handoff signal (Spec §8.2).
-    if stage_map.is_closed_won(pipeline_id, stage_id):
+    # 3) Stage C — the conversion/handoff signal (Spec §8.2). Defaults to
+    # closed-won; configurable earlier via conversion_stage_ids in the stage map.
+    if stage_map.is_conversion_trigger(pipeline_id, stage_id):
         onboarding = await conversion.handle_closed_won(
             session, ghl_deal=ghl_deal, autotask=autotask, ghl=ghl, correlation_id=correlation_id
         )

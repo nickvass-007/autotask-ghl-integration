@@ -41,11 +41,15 @@ You need the GHL pipeline + stage IDs and the Autotask picklist values:
 - Replace every `REPLACE_WITH_…` placeholder. The stage list **order matters**
   for the sales pipeline: it defines what counts as a *backwards* move (§10.2).
 - Set `closed_won_stage_id` — reaching this stage IS the Stage-C conversion
-  trigger (§8.2).
+  trigger (§8.2) by default.
+- **Optional — earlier handoff:** to onboard a prospect into Autotask *before*
+  the deal closes (e.g. once Qualified), list the trigger stages under
+  `conversion_stage_ids:`. Each listed stage raises the same gated
+  `customer_onboarding` approval; nothing is written without a human decision.
 
 Validate: `GET /admin/stage-map` → `problems: []` means every entry resolves.
 
-## 4. Subscribe the opportunity webhooks
+## 4. Subscribe the opportunity + note webhooks
 
 In the app's **Webhooks** section add the opportunity events (Create, Update /
 Stage Update, Status Update) pointing at:
@@ -53,6 +57,16 @@ Stage Update, Status Update) pointing at:
 ```
 https://<your-tunnel>/webhooks/crm/opportunity
 ```
+
+And the **Note Create** event pointing at:
+
+```
+https://<your-tunnel>/webhooks/crm/note
+```
+
+(A GHL note lands on the newest Autotask ticket already mirrored for that
+contact; if the contact has no mirrored ticket the note is HELD — a note never
+creates a ticket, §10.5.)
 
 Same Ed25519 signature verification as contacts — nothing to configure.
 
@@ -77,20 +91,29 @@ RECONCILIATION_INTERVAL_SECONDS=3600
 ```
 
 Restart the API and complete the OAuth grant; the poller logs one summary line
-per sweep. ⚠️ The first sweep backfills from `id > 0` — on a large Autotask
-database seed the cursor first (set `sync_cursor.cursor` to `id:<current-max>`)
-if you don't want a full historical mirror.
+per sweep. Each sweep covers, in order: **Companies → GHL Businesses** (so
+contacts can attach to their Business), **Contacts**, **Opportunities**,
+**Tickets**, then **Ticket Notes → GHL contact notes** (only for tickets
+already mirrored). The businesses mirror needs the `businesses.readonly
+businesses.write` scopes added in step 1's screen.
+
+⚠️ The first sweep backfills from `id > 0` — on a large Autotask database seed
+the cursors first (set `sync_cursor.cursor` to `id:<current-max>` per entity
+row, including `ticket_note`) if you don't want a full historical mirror.
 
 ## 7. What's gated vs automatic (quick reference)
 
 | Event | Result |
 |---|---|
+| AT Account change | mirrored to GHL Business automatically (AT wins) |
 | AT Opportunity/Ticket change | mirrored to GHL automatically (AT wins) |
+| AT Ticket Note added | appended to the linked GHL contact (mirrored tickets only) |
+| GHL note on a synced contact | appended to that contact's newest mirrored AT ticket; HELD if none |
 | AT stage/status not in map | `unmapped_stage` approval — never guessed |
 | GHL deal, clean dedupe miss, account resolves | Autotask Opportunity created |
 | GHL deal, possible duplicate / account unresolved | approval |
 | GHL forward stage move on linked deal | applied (audited) |
 | GHL **backwards** move / won / lost / amount overwrite | approval |
 | GHL edit on a Service-pipeline card | **BLOCKED and logged** (never queued) |
-| Sales deal reaches closed-won | Stage-C `customer_onboarding` approval; on approve: Account+Contact created/linked, GHL contact stamped `Converted — Managed in Autotask` |
+| Sales deal reaches closed-won (or a configured `conversion_stage_ids` stage) | Stage-C `customer_onboarding` approval; on approve: Account+Contact created/linked, GHL contact stamped `Converted — Managed in Autotask` |
 | AT classification change | GHL tags/custom fields updated on next sweep |

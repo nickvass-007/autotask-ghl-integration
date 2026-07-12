@@ -4,10 +4,10 @@ An **in-house, production-grade** integration between **Autotask PSA** (Datto) a
 **GoHighLevel (GHL / LeadConnector)**, hosted on **Azure**. No third-party iPaaS sits in the
 runtime path — the mechanics are ours to control.
 
-> **Status: Stage 1.** This delivers the foundation, the connectors (authentication), and the
-> **Contacts flow end-to-end against sandbox**, plus the Teams approval bot for Contacts. Flow 2
-> (Opportunities/Tickets), conversion handoff, classification sync, and production cutover come
-> in later stages. See [Stage boundaries](#stage-boundaries).
+> **Status: Stage 3.** Foundation + connectors + **Contacts, Companies, Opportunities, Tickets
+> and Notes flows** (Flow 2 inert until configured), the **Sync Control Centre portal**, **Teams
+> approvals/feed** (bot + Workflow webhook), and the **Fabric export seam**. Production cutover
+> and the Fabric hub repoint come in later stages. See [Stage boundaries](#stage-boundaries).
 
 ---
 
@@ -226,11 +226,22 @@ everywhere.
 
 **Stage 2 (code complete, needs configuration):** Flow 2 Opportunities/Tickets — Autotask→GHL
 mirrors (Sales + read-only Service pipelines), the gated GHL→Autotask Opportunity direction,
-Stage C conversion handoff on closed-won, Stage E classification sync, notes sync, and the
-Autotask polling sweep. All of it is **inert until configured** — follow
-[docs/flow2-setup.md](docs/flow2-setup.md) (GHL scopes, pipelines, `config/stage_mapping.yaml`,
-`ENABLE_POLLER`).
+Stage C conversion handoff (closed-won by default, configurable earlier via
+`conversion_stage_ids`), Stage E classification sync, and the Autotask polling sweep — which now
+also mirrors **Accounts → GHL Businesses** and **Ticket Notes → GHL contact notes**, with the
+`/webhooks/crm/note` endpoint carrying GHL notes back onto mirrored tickets. All of it is
+**inert until configured** — follow [docs/flow2-setup.md](docs/flow2-setup.md) (GHL scopes,
+pipelines, `config/stage_mapping.yaml`, `ENABLE_POLLER`).
 
-**Later stages (NOT built yet):** live Azure provisioning + production cutover; additional
-connectors (e.g. 3CX). The **seams** exist (full schema, canonical hub, connector contract,
-config-driven mapping) so they plug in without a rewrite — see [CONTRIBUTING.md](CONTRIBUTING.md).
+**Stage 3 (this delivery):** Teams for real — proactive Adaptive-Card approvals with working
+Approve/Reject buttons (Azure Bot / CloudAdapter, `pip install -e ".[teams]"`), a
+zero-infrastructure Workflow-webhook transport for cards + the BLOCKED/ERROR transaction feed,
+Graph email alerts for HIGH approvals and circuit-breaker trips
+([docs/setup/teams-bot.md](docs/setup/teams-bot.md)); plus the **Microsoft Fabric ingestion
+seam** — token-gated incremental `/export/{transactions,mappings,approvals}` feeds and the
+hub repoint plan in [docs/fabric-roadmap.md](docs/fabric-roadmap.md).
+
+**Later stages (NOT built yet):** live Azure provisioning + production cutover; the Fabric
+repoint itself (Phases F1–F3 in the roadmap); additional connectors (e.g. 3CX). The **seams**
+exist (full schema, canonical hub, connector contract, config-driven mapping) so they plug in
+without a rewrite — see [CONTRIBUTING.md](CONTRIBUTING.md).

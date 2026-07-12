@@ -95,6 +95,14 @@ def record_transaction(
     )
     session.add(row)
     session.flush()
+    # BLOCKED/ERROR events also land in the Teams feed channel (Spec §11.2).
+    # Conflicts are excluded here — they already announce via their approval card.
+    if status in (TransactionStatus.BLOCKED, TransactionStatus.ERROR):
+        settings = get_settings()
+        if settings.teams_feed_events:
+            from ..teams.notify import announce_event  # lazy: avoids import cycles
+
+            announce_event(f"`{status.value}` {direction.value} {entity_type}: {summary}")
     return row
 
 

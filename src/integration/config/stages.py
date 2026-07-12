@@ -44,6 +44,11 @@ class PipelineMap:
     autotask_entity: str                    # "opportunity" | "ticket"
     stages: tuple[StageEntry, ...]
     closed_won_stage_id: str | None = None  # sales only — the Stage-C handoff signal
+    # Sales only: stages that trigger the Stage-C conversion handoff. Empty =
+    # closed-won only (the default). Lets the handoff fire EARLIER in the
+    # pipeline (e.g. "Qualified") when the business wants prospects in the
+    # system of record before the deal closes.
+    conversion_stage_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,6 +88,17 @@ class StageMap:
             and ghl_stage_id == self.sales.closed_won_stage_id
         )
 
+    def is_conversion_trigger(self, ghl_pipeline_id: str, ghl_stage_id: str) -> bool:
+        """True when reaching this stage should raise the Stage-C onboarding
+        approval (Spec §8.2). Configurable via ``conversion_stage_ids``; falls
+        back to the closed-won stage so existing configs keep their behaviour."""
+        if ghl_pipeline_id != self.sales.ghl_pipeline_id:
+            return False
+        triggers = self.sales.conversion_stage_ids or (
+            (self.sales.closed_won_stage_id,) if self.sales.closed_won_stage_id else ()
+        )
+        return ghl_stage_id in triggers
+
 
 def _pipeline(raw: dict, *, key: str) -> PipelineMap:
     stages = tuple(
@@ -100,6 +116,9 @@ def _pipeline(raw: dict, *, key: str) -> PipelineMap:
         stages=stages,
         closed_won_stage_id=(
             str(raw["closed_won_stage_id"]) if raw.get("closed_won_stage_id") else None
+        ),
+        conversion_stage_ids=tuple(
+            str(s) for s in (raw.get("conversion_stage_ids") or [])
         ),
     )
 
@@ -192,6 +211,11 @@ async def validate_stage_map(*, autotask, ghl) -> list[str]:
             problems.append(
                 f"{label}: closed_won_stage_id {pipe.closed_won_stage_id!r} not in pipeline"
             )
+        for trigger in pipe.conversion_stage_ids:
+            if trigger not in stage_ids:
+                problems.append(
+                    f"{label}: conversion trigger stage {trigger!r} not in pipeline"
+                )
 
     # Autotask side: stage/status values must be real picklist values.
     opp_values = set(await autotask.get_picklist_values("Opportunities", "stage"))

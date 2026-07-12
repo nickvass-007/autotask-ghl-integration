@@ -13,10 +13,11 @@ from integration.canonical.entities import (
     CanonicalCompany,
     CanonicalContact,
     CanonicalDeal,
+    CanonicalServiceItem,
 )
 from integration.config.stages import PipelineMap, StageEntry, StageMap
-from integration.connectors.base import PushResult
-from integration.db.enums import Direction, System
+from integration.connectors.base import ChangeSet, PushResult
+from integration.db.enums import CanonicalEntityType, Direction, System
 
 
 def make_stage_map() -> StageMap:
@@ -76,6 +77,10 @@ class FakeAutotask:
     ticket_notes: list[tuple[str, str, str]] = field(default_factory=list)
     updates: list[tuple[str, dict]] = field(default_factory=list)
     opp_updates: list[tuple[str, dict]] = field(default_factory=list)
+    tickets: dict[str, CanonicalServiceItem] = field(default_factory=dict)
+    # Poller inputs: entities the next fetch_changes sweep should return.
+    poll_queue: dict[CanonicalEntityType, list] = field(default_factory=dict)
+    note_queue: list[dict] = field(default_factory=list)
     _next_id: int = 1000
 
     async def find_contacts(self, *, email: str | None = None) -> list[CanonicalContact]:
@@ -173,6 +178,20 @@ class FakeAutotask:
         self._next_id += 1
         self.ticket_notes.append((str(ticket_id), title, body))
         return PushResult(ok=True, external_id=str(self._next_id), detail="note_created")
+
+    async def find_tickets(self, *, contact_id: str) -> list[CanonicalServiceItem]:
+        return [t for t in self.tickets.values() if t.contact_id == str(contact_id)]
+
+    async def fetch_changes(self, entity_type: CanonicalEntityType, *, cursor=None) -> ChangeSet:
+        entities = self.poll_queue.pop(entity_type, [])
+        new_cursor = f"id:{len(entities)}" if entities else cursor
+        return ChangeSet(entities=entities, cursor=new_cursor, has_more=False)
+
+    async def fetch_ticket_note_changes(self, *, cursor=None) -> tuple[list[dict], str | None]:
+        watermark = int(cursor.split(":", 1)[1]) if cursor and ":" in cursor else 0
+        items = [n for n in self.note_queue if int(n["id"]) > watermark]
+        new_cursor = f"id:{max(int(n['id']) for n in items)}" if items else cursor
+        return items, new_cursor
 
 
 @dataclass

@@ -30,16 +30,19 @@ from ..canonical.entities import CanonicalContact, CanonicalDeal
 from ..config.settings import get_settings
 from ..config.stages import load_stage_map, sync_stage_map_to_db
 from ..core.logging import configure_logging, get_logger, new_correlation_id
-from ..db.enums import ApprovalType, System
+from ..db.enums import System
 from ..db.session import session_scope
 from ..jobs.poller import run_poller
 from ..sync import contacts as contacts_flow
 from ..sync import deals as deals_flow
-from ..sync.approvals import get_approval, list_pending
+from ..sync import notes as notes_flow
+from ..sync.approvals import list_pending
+from ..sync.decisions import apply_approval_decision
 from ..teams.bot import handle_command
 from ..jobs.scheduler import run_scheduler
 from .admin import router as admin_router
 from .deps import get_autotask, get_ghl, set_ghl_token
+from .export import router as export_router
 from .portal import router as portal_router
 
 log = get_logger(__name__)
@@ -84,6 +87,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Autotask ⇄ GoHighLevel Integration", version="0.1.0", lifespan=lifespan)
 app.include_router(admin_router)
 app.include_router(portal_router)
+app.include_router(export_router)
 
 
 @app.get("/health")
@@ -240,6 +244,34 @@ async def ghl_opportunity_webhook(request: Request) -> JSONResponse:
     )
 
 
+# ── GHL note webhook -> Autotask ticket note, additive-only (Spec §10.5) ──────
+@app.post("/webhooks/crm/note")
+async def ghl_note_webhook(request: Request) -> JSONResponse:
+    body = await request.body()
+    ghl = get_ghl()
+    if not ghl.verify_webhook(dict(request.headers), body):
+        raise HTTPException(status_code=401, detail="invalid webhook signature")
+
+    payload = await request.json()
+    data = payload.get("note", payload)
+    note_id = str(data.get("id") or payload.get("eventId") or new_correlation_id())
+    contact_id = str(data.get("contactId") or "")
+    note_body = str(data.get("body") or "")
+    if not contact_id or not note_body:
+        return JSONResponse({"action": "skipped", "detail": "no contact or empty body"})
+
+    autotask = await get_autotask()
+    with session_scope() as session:
+        action = await notes_flow.route_ghl_contact_note(
+            session,
+            ghl_contact_id=contact_id,
+            note_id=note_id,
+            note_body=note_body,
+            autotask=autotask,
+        )
+    return JSONResponse({"action": action, "note_id": note_id})
+
+
 # ── Stage-map inspection (Spec §10.3: list + flag entries that don't resolve) ──
 @app.get("/admin/stage-map")
 async def stage_map_status() -> JSONResponse:
@@ -324,43 +356,47 @@ async def decide_approval(
         raise HTTPException(status_code=401, detail="unverified approval caller")
 
     decision = body.get("decision", "")
-    approve = decision in ("approve", "override")
     decided_by = body.get("decided_by", "teams-bot")
     autotask = await get_autotask()
     with session_scope() as session:
-        # Route by approval family: Flow-2 / Stage-C types apply via the deals
-        # handler; everything else is the Flow-1 Contacts handler.
-        row = get_approval(session, approval_id)
-        is_deal = row is not None and ApprovalType(row.approval_type) in deals_flow.DEAL_APPROVAL_TYPES
-        if is_deal:
-            outcome = await deals_flow.apply_deal_decision(
-                session,
-                approval_id=approval_id,
-                approve=approve,
-                decided_by=decided_by,
-                autotask=autotask,
-                ghl=get_ghl(),
-                chosen_account_id=body.get("chosen_id"),
-            )
-        else:
-            outcome = await contacts_flow.apply_decision(
-                session,
-                approval_id=approval_id,
-                approve=approve,
-                decided_by=decided_by,
-                autotask=autotask,
-                chosen_account_id=body.get("chosen_id"),
-                chosen_autotask_contact_id=body.get("chosen_id"),
-            )
-    return JSONResponse({"action": outcome.action, "correlation_id": outcome.correlation_id})
+        result = await apply_approval_decision(
+            session,
+            approval_id=approval_id,
+            decision=decision,
+            decided_by=decided_by,
+            autotask=autotask,
+            ghl=get_ghl(),
+            chosen_id=body.get("chosen_id"),
+        )
+    return JSONResponse({"action": result.action, "correlation_id": result.correlation_id})
 
 
 # ── Teams bot messaging endpoint (Spec §11) ───────────────────────────────────
 @app.post("/api/messages")
 async def teams_messages(request: Request) -> Response:
-    """Minimal bot endpoint. In production this is wired to the botbuilder
-    CloudAdapter with the Bot's app id/password; here we expose the command router
-    so the feed/commands are testable without the Azure Bot channel."""
+    """The Azure Bot messaging endpoint. With TEAMS_BOT_APP_ID configured (and
+    the optional `teams` extra installed) this runs the full botbuilder
+    CloudAdapter path: JWT-verified activities, conversation-reference capture
+    for proactive approval cards, card-submit decisions, and slash commands.
+    Unconfigured, it degrades to the SDK-free command router so the feed and
+    commands stay testable without the Azure Bot channel."""
     payload = await request.json()
+    settings = get_settings()
+    if settings.teams_bot_app_id:
+        try:
+            from ..teams.bot import process_bot_activity
+
+            invoke = await process_bot_activity(
+                payload, request.headers.get("authorization", "")
+            )
+            if invoke is not None:
+                return JSONResponse(content=invoke.body, status_code=invoke.status)
+            return Response(status_code=201)
+        except ImportError:
+            log.error(
+                "TEAMS_BOT_APP_ID is set but botbuilder is not installed — "
+                "run: pip install -e '.[teams]'"
+            )
+            raise HTTPException(status_code=501, detail="bot SDK not installed")
     text = payload.get("text", "")
     return JSONResponse({"reply": handle_command(text)})

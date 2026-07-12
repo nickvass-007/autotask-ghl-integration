@@ -24,13 +24,17 @@ def get_engine() -> Engine:
     # Generous pool: webhook handlers hold a session across slow connector calls,
     # so bursts (e.g. GHL retry storms) need headroom; fail fast rather than
     # wedging the event loop for 30s when it's truly exhausted.
+    # SQLite (tests) uses SingletonThreadPool, which rejects pool sizing kwargs.
+    pool_kwargs = (
+        {}
+        if settings.database_url.startswith("sqlite")
+        else {"pool_size": 15, "max_overflow": 25, "pool_timeout": 10}
+    )
     return create_engine(
         settings.database_url,
         pool_pre_ping=True,
-        pool_size=15,
-        max_overflow=25,
-        pool_timeout=10,
         future=True,
+        **pool_kwargs,
     )
 
 
