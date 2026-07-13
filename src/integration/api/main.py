@@ -25,6 +25,7 @@ from fastapi import FastAPI, Header, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, RedirectResponse
 
 import asyncio
+import hashlib
 
 from ..canonical.entities import CanonicalContact, CanonicalDeal
 from ..config.settings import get_settings
@@ -254,11 +255,18 @@ async def ghl_note_webhook(request: Request) -> JSONResponse:
 
     payload = await request.json()
     data = payload.get("note", payload)
-    note_id = str(data.get("id") or payload.get("eventId") or new_correlation_id())
     contact_id = str(data.get("contactId") or "")
     note_body = str(data.get("body") or "")
     if not contact_id or not note_body:
         return JSONResponse({"action": "skipped", "detail": "no contact or empty body"})
+
+    # Idempotency key: prefer GHL's ids; otherwise a STABLE hash of the note so a
+    # webhook redelivery (timeout/5xx retry) dedupes instead of appending twice.
+    # A random fallback would defeat the ghlnote:<id> idempotency guard entirely.
+    note_id = str(data.get("id") or payload.get("eventId") or "")
+    if not note_id:
+        digest = hashlib.sha256(f"{contact_id}:{note_body}".encode()).hexdigest()[:16]
+        note_id = f"syn:{digest}"
 
     autotask = await get_autotask()
     with session_scope() as session:
@@ -385,18 +393,26 @@ async def teams_messages(request: Request) -> Response:
     if settings.teams_bot_app_id:
         try:
             from ..teams.bot import process_bot_activity
-
-            invoke = await process_bot_activity(
-                payload, request.headers.get("authorization", "")
-            )
-            if invoke is not None:
-                return JSONResponse(content=invoke.body, status_code=invoke.status)
-            return Response(status_code=201)
         except ImportError:
             log.error(
                 "TEAMS_BOT_APP_ID is set but botbuilder is not installed — "
                 "run: pip install -e '.[teams]'"
             )
             raise HTTPException(status_code=501, detail="bot SDK not installed")
+        try:
+            invoke = await process_bot_activity(
+                payload, request.headers.get("authorization", "")
+            )
+        except PermissionError as exc:
+            # Bot Framework JWT rejected — a spoofed/unsigned caller, not a bug.
+            raise HTTPException(status_code=401, detail="unauthenticated bot caller") from exc
+        if invoke is not None:
+            return JSONResponse(content=invoke.body, status_code=invoke.status)
+        return Response(status_code=201)
+    # SDK-free fallback (local dev / testing). ⚠️ It is UNAUTHENTICATED, so never
+    # expose it in production: a bot_app_id unset by env drift must fail, not
+    # silently serve /pending, /transactions, /audit to any caller.
+    if settings.is_production:
+        raise HTTPException(status_code=503, detail="Teams bot not configured (TEAMS_BOT_APP_ID)")
     text = payload.get("text", "")
     return JSONResponse({"reply": handle_command(text)})

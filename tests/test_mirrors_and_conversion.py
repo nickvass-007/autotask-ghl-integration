@@ -108,6 +108,31 @@ async def test_closed_won_raises_onboarding_approval_and_writes_nothing(session)
     assert row.approval_type == ApprovalType.CUSTOMER_ONBOARDING
 
 
+async def test_repeated_conversion_trigger_does_not_duplicate_onboarding(session):
+    """A deal crossing multiple trigger stages (or firing repeat webhooks) while
+    the approval is still pending must not raise a second onboarding approval
+    (finding #8)."""
+    autotask = FakeAutotask()
+    ghl = FakeGHL()
+    ghl.contacts["ghlc-1"] = CanonicalContact(
+        source_system=System.GHL, source_id="ghlc-1", email="won@newco.io",
+        first_name="Won", last_name="Deal", company_name="NewCo",
+    )
+    deal = make_ghl_deal(stage="stage-won", status="won")
+
+    first = await handle_closed_won(session, ghl_deal=deal, autotask=autotask, ghl=ghl)
+    second = await handle_closed_won(session, ghl_deal=deal, autotask=autotask, ghl=ghl)
+
+    assert first.action == "approval" and second.action == "approval"
+    assert second.approval_ids == first.approval_ids  # same pending approval reused
+    pending = (
+        session.query(ApprovalQueue)
+        .filter_by(approval_type=ApprovalType.CUSTOMER_ONBOARDING, ghl_id="ghlc-1")
+        .all()
+    )
+    assert len(pending) == 1  # exactly one, not two
+
+
 async def test_onboarding_approval_creates_account_contact_and_stamps(session):
     autotask = FakeAutotask()
     ghl = FakeGHL()

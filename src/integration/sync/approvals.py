@@ -71,8 +71,9 @@ def raise_approval(session: Session, req: ApprovalRequest) -> ApprovalQueue:
         req.severity,
         req.detected_reason,
     )
-    # Teams card + (HIGH) admin email — fire-and-forget, never blocks the flow.
-    announce_approval(row)
+    # Teams card + (HIGH) admin email — deferred to after this transaction
+    # commits, so a later rollback can't leave a card for a phantom approval.
+    announce_approval(session, row)
     return row
 
 

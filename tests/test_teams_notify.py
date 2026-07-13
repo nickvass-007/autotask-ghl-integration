@@ -13,7 +13,9 @@ from integration.db.enums import (
     Severity,
     System,
 )
+from integration.db.base import Base
 from integration.db.models import ApprovalQueue
+from integration.db.session import get_engine, session_scope
 from integration.sync.approvals import ApprovalRequest, raise_approval
 from integration.sync.decisions import apply_approval_decision
 from integration.teams import notify
@@ -21,6 +23,55 @@ from integration.teams import notify
 from fakes import FakeAutotask, FakeGHL
 
 pytestmark = pytest.mark.asyncio
+
+
+def _onboarding_request() -> ApprovalRequest:
+    return ApprovalRequest(
+        approval_type=ApprovalType.CONTACT_POSSIBLE_DUPLICATE,
+        severity=Severity.MED,
+        canonical_entity_type=CanonicalEntityType.CONTACT,
+        source_system=System.GHL,
+        target_system=System.AUTOTASK,
+        ghl_id="ghlc-defer",
+        proposed_change={},
+        detected_reason="defer test",
+        correlation_id="corr-defer",
+    )
+
+
+async def test_approval_announcement_deferred_until_commit(monkeypatch):
+    """announce_approval must NOT post while the caller's transaction is still
+    open — only after it commits (finding #5)."""
+    captured = []
+    monkeypatch.setattr(notify, "_spawn", lambda coro: (captured.append(coro), coro.close()))
+    monkeypatch.setattr(
+        notify, "get_settings",
+        lambda: Settings(teams_workflow_webhook_url="https://flow.example/hook"),
+    )
+    Base.metadata.create_all(get_engine())
+
+    with session_scope() as s:
+        raise_approval(s, _onboarding_request())
+        assert captured == []  # transaction still open — nothing announced yet
+    assert len(captured) == 1  # announced exactly once, after commit
+
+
+async def test_approval_announcement_dropped_on_rollback(monkeypatch):
+    """If the flow rolls back after raising, the card must never be posted for the
+    phantom approval (finding #5)."""
+    captured = []
+    monkeypatch.setattr(notify, "_spawn", lambda coro: (captured.append(coro), coro.close()))
+    monkeypatch.setattr(
+        notify, "get_settings",
+        lambda: Settings(teams_workflow_webhook_url="https://flow.example/hook"),
+    )
+    Base.metadata.create_all(get_engine())
+
+    with pytest.raises(RuntimeError):
+        with session_scope() as s:
+            raise_approval(s, _onboarding_request())
+            raise RuntimeError("later step fails -> rollback")
+    assert captured == []  # never announced
 
 
 def _approval_row(severity=Severity.MED) -> ApprovalQueue:
@@ -73,7 +124,9 @@ async def test_workflow_card_posts_with_portal_deeplink(monkeypatch):
     assert any("Approval needed" in str(b.get("text", "")) for b in card["body"])
 
 
-async def test_feed_event_posts_plain_message(monkeypatch):
+async def test_feed_event_posts_adaptive_card_attachment(monkeypatch):
+    """Feed lines must ride the SAME attachment envelope as approval cards, or the
+    documented Power Automate card-posting flow silently drops them (finding #6)."""
     sent: list[tuple[str, dict]] = []
 
     async def fake_post(url: str, payload: dict) -> bool:
@@ -88,12 +141,12 @@ async def test_feed_event_posts_plain_message(monkeypatch):
     )
 
     await notify.post_feed_event("`blocked` ghl_to_autotask deal: write blocked")
-    assert sent == [
-        (
-            "https://flow.example/hook",
-            {"type": "message", "text": "`blocked` ghl_to_autotask deal: write blocked"},
-        )
-    ]
+    assert len(sent) == 1
+    url, payload = sent[0]
+    assert url == "https://flow.example/hook"
+    card = payload["attachments"][0]["content"]
+    assert card["type"] == "AdaptiveCard"
+    assert card["body"][0]["text"] == "`blocked` ghl_to_autotask deal: write blocked"
 
 
 async def test_announce_approval_is_a_noop_when_unconfigured(session):

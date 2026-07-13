@@ -122,24 +122,37 @@ async def poll_once(*, autotask, ghl) -> dict:
 async def _sweep_ticket_notes(*, autotask, ghl) -> int:
     """Mirror new Autotask TicketNotes to the linked GHL contacts (§10.5).
 
-    ``mirror_ticket_note`` is idempotent and silently skips notes on tickets that
-    were never mirrored, so the sweep can safely walk every new note."""
-    processed = 0
+    Each note is committed in its OWN transaction, together with the cursor
+    advance, so a durable idempotency mark (``processed_events``) lands before the
+    next note is touched. That matters because ``mirror_ticket_note`` posts to GHL
+    *before* the commit: batching the whole sweep in one transaction meant a
+    mid-sweep failure rolled back marks for notes already posted, re-posting them
+    next cycle. Notes are walked in ascending id order and the cursor stops at the
+    first hard failure (rather than skipping past it) — there is no reconciliation
+    lane for notes, so a transiently-failing note must be retried, not lost."""
     with session_scope() as session:
-        cursor_row = _get_cursor(session, _NOTE_CURSOR_KEY)
-        notes, new_cursor = await autotask.fetch_ticket_note_changes(cursor=cursor_row.cursor)
-        for note in notes:
-            try:
+        cursor = _get_cursor(session, _NOTE_CURSOR_KEY).cursor
+    notes, _ = await autotask.fetch_ticket_note_changes(cursor=cursor)
+
+    processed = 0
+    for note in sorted(notes, key=lambda n: int(n["id"])):
+        try:
+            with session_scope() as session:
                 action = await mirror_ticket_note(session, note=note, ghl=ghl)
-                if action == "created":
-                    processed += 1
-            except Exception:
-                session.rollback()  # same poisoned-transaction guard as the entity sweep
-                log.exception(
-                    "Poller: ticket note %s failed — continuing sweep", note.get("id")
-                )
-        cursor_row.cursor = new_cursor
-        cursor_row.updated_at = utcnow()
+                # Advance the cursor in the SAME transaction as the note's mark.
+                cursor_row = _get_cursor(session, _NOTE_CURSOR_KEY)
+                cursor_row.cursor = f"id:{int(note['id'])}"
+                cursor_row.updated_at = utcnow()
+            if action == "created":
+                processed += 1
+        except Exception:
+            # Halt the sweep WITHOUT advancing past this note so it retries next
+            # cycle. Its own transaction already rolled back (no partial mark).
+            log.exception(
+                "Poller: ticket note %s failed — halting note sweep so it retries "
+                "next cycle (notes have no reconciliation lane)", note.get("id")
+            )
+            break
     return processed
 
 

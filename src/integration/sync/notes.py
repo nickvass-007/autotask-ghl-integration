@@ -19,6 +19,7 @@ from ..config.settings import get_settings
 from ..core.idempotency import already_processed, mark_processed
 from ..core.logging import get_logger, new_correlation_id
 from ..db.enums import (
+    Actor,
     CanonicalEntityType,
     Direction,
     Operation,
@@ -26,7 +27,26 @@ from ..db.enums import (
     TransactionStatus,
 )
 from ..db.models import EntityMapping
-from .audit import record_transaction
+from .audit import record_before_state, record_transaction
+
+
+def _audit_note_write(session, *, correlation_id, ticket_id, title, body) -> None:
+    """Immutable before-state row before an Autotask ticket-note write (§5.4).
+
+    Notes are additive (before=None), but every Autotask write is captured so
+    the change is visible in the revert/audit trail — CONTRIBUTING.md, §5.4."""
+    record_before_state(
+        session,
+        correlation_id=correlation_id,
+        operation=Operation.CREATE,
+        target_system=System.AUTOTASK,
+        entity_type="TicketNote",
+        entity_id=None,
+        before=None,
+        after={"ticket_id": ticket_id, "title": title, "body": body},
+        actor=Actor.SYSTEM,
+        result="note_mirror",
+    )
 
 log = get_logger(__name__)
 
@@ -80,6 +100,13 @@ async def mirror_ticket_note(
     if already_processed(session, event_id, System.AUTOTASK):
         return "skipped"
     mark_processed(session, event_id, System.AUTOTASK)
+
+    # Loop guard: never re-mirror a note that ORIGINATED in GHL. Notes pushed by
+    # route_ghl_contact_note/push_ghl_note carry the GHL stamp in their title;
+    # without this, every inbound GHL note bounces straight back onto the same
+    # contact as a duplicate on the next poll sweep.
+    if str(note.get("title") or "").startswith(GHL_NOTE_STAMP.split("{", 1)[0]):
+        return "skipped"
 
     link = _service_mapping_by_autotask(session, ticket_id)
     if link is None or link.ghl_id is None:
@@ -166,13 +193,17 @@ async def push_ghl_note(
         return "held"
 
     stamp = GHL_NOTE_STAMP.format(note_id=note_id)
+    _audit_note_write(
+        session, correlation_id=correlation_id, ticket_id=link.autotask_id,
+        title=stamp, body=note_body,
+    )
     result = await autotask.create_ticket_note(
         link.autotask_id, title=stamp, body=note_body
     )
     return _record_push(session, correlation_id, note_id, link.autotask_id, result)
 
 
-def _record_push(session, correlation_id, note_id, ticket_id, result) -> str:
+def _record_push(session, correlation_id, note_id, ticket_id, result, suffix="") -> str:
     record_transaction(
         session,
         correlation_id=correlation_id,
@@ -181,7 +212,7 @@ def _record_push(session, correlation_id, note_id, ticket_id, result) -> str:
         entity_type="note",
         entity_ref=result.external_id,
         status=TransactionStatus.SUCCESS if result.ok else TransactionStatus.ERROR,
-        summary=f"GHL note {note_id} appended to Autotask Ticket {ticket_id}",
+        summary=f"GHL note {note_id} appended to Autotask Ticket {ticket_id}{suffix}",
     )
     return "created" if result.ok else "error"
 
@@ -255,16 +286,10 @@ async def route_ghl_contact_note(
 
     ticket_id = candidates[0]
     stamp = GHL_NOTE_STAMP.format(note_id=note_id)
+    _audit_note_write(
+        session, correlation_id=correlation_id, ticket_id=ticket_id,
+        title=stamp, body=note_body,
+    )
     result = await autotask.create_ticket_note(ticket_id, title=stamp, body=note_body)
     picked = f" (newest of {len(candidates)} mirrored tickets)" if len(candidates) > 1 else ""
-    record_transaction(
-        session,
-        correlation_id=correlation_id,
-        direction=Direction.GHL_TO_AUTOTASK,
-        operation=Operation.CREATE if result.ok else Operation.ERROR,
-        entity_type="note",
-        entity_ref=result.external_id,
-        status=TransactionStatus.SUCCESS if result.ok else TransactionStatus.ERROR,
-        summary=f"GHL note {note_id} appended to Autotask Ticket {ticket_id}{picked}",
-    )
-    return "created" if result.ok else "error"
+    return _record_push(session, correlation_id, note_id, ticket_id, result, suffix=picked)

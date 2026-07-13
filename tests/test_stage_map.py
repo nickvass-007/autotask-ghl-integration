@@ -33,18 +33,21 @@ def test_conversion_trigger_defaults_to_closed_won():
     assert smap.is_conversion_trigger("pipe-service", "stage-won") is False
 
 
-def test_conversion_trigger_configurable_earlier_stage():
+def test_conversion_trigger_adds_earlier_stage_but_keeps_closed_won():
     base = make_stage_map()
+    # Operator configures ONLY an earlier stage (not closed-won).
     sales = PipelineMap(
         ghl_pipeline_id=base.sales.ghl_pipeline_id,
         autotask_entity="opportunity",
         stages=base.sales.stages,
         closed_won_stage_id=base.sales.closed_won_stage_id,
-        conversion_stage_ids=("stage-qualified", "stage-won"),
+        conversion_stage_ids=("stage-qualified",),
     )
     smap = StageMap(sales=sales, service=base.service)
-    # The handoff can fire when a prospect is QUALIFIED, not only on closed-won.
+    # The handoff fires when a prospect is QUALIFIED...
     assert smap.is_conversion_trigger("pipe-sales", "stage-qualified") is True
+    # ...AND closed-won still fires — the list ADDS, it never replaces closed-won
+    # (finding #4: a deal jumping straight to won must still onboard).
     assert smap.is_conversion_trigger("pipe-sales", "stage-won") is True
     assert smap.is_conversion_trigger("pipe-sales", "stage-new") is False
     # closed-won detection itself is unchanged (outcome protection still keys off it)

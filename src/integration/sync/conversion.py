@@ -27,6 +27,7 @@ from ..core.logging import get_logger, new_correlation_id
 from ..db.base import utcnow
 from ..db.enums import (
     Actor,
+    ApprovalStatus,
     ApprovalType,
     CanonicalEntityType,
     Direction,
@@ -61,6 +62,18 @@ def _contact_mapping_by_ghl(session: Session, ghl_contact_id: str) -> EntityMapp
         EntityMapping.ghl_id == ghl_contact_id,
     )
     return session.execute(stmt).scalar_one_or_none()
+
+
+def _pending_onboarding_for(session: Session, ghl_contact_id: str) -> ApprovalQueue | None:
+    """An already-pending onboarding approval for this GHL contact, if any."""
+    env = get_settings().environment
+    stmt = select(ApprovalQueue).where(
+        ApprovalQueue.environment == env,
+        ApprovalQueue.status == ApprovalStatus.PENDING,
+        ApprovalQueue.approval_type == ApprovalType.CUSTOMER_ONBOARDING,
+        ApprovalQueue.ghl_id == ghl_contact_id,
+    )
+    return session.execute(stmt).scalars().first()
 
 
 async def _stamp_converted(session: Session, *, ghl, ghl_contact_id: str, correlation_id: str) -> None:
@@ -116,6 +129,20 @@ async def handle_closed_won(
             autotask_id=existing_link.autotask_id,
             ghl_id=ghl_contact_id,
             detail="already mapped — stamp refreshed",
+        )
+
+    # Idempotent against repeat triggers: a deal can cross several conversion
+    # stages (or fire repeated update webhooks) before a human decides. If an
+    # onboarding approval is already pending for this contact, don't raise — and
+    # re-notify — a duplicate.
+    already_pending = _pending_onboarding_for(session, ghl_contact_id)
+    if already_pending is not None:
+        return OnboardingOutcome(
+            "approval",
+            correlation_id,
+            ghl_id=ghl_contact_id,
+            approval_ids=[already_pending.id],
+            detail="onboarding approval already pending",
         )
 
     ghl_contact = await ghl.get_contact(ghl_contact_id)

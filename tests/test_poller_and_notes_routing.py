@@ -125,9 +125,57 @@ async def test_poller_sweeps_ticket_notes_to_ghl(global_session):
     assert "[Autotask note 9101]" in ghl.notes[0][1]
 
     # Cursor advanced: the second sweep re-processes nothing.
-    second = await poll_once(autotask=autotask, ghl=ghl)
-    assert second["ticket_note"] == 0
+    again = await poll_once(autotask=autotask, ghl=ghl)
+    assert again["ticket_note"] == 0
     assert len(ghl.notes) == 1
+
+
+async def test_poller_does_not_echo_ghl_originated_notes(global_session):
+    """A ticket note whose title carries the GHL stamp originated in GHL — the
+    sweep must not bounce it back onto the contact (finding #2)."""
+    autotask = FakeAutotask()
+    ghl = FakeGHL()
+    card = CanonicalDeal(source_system=System.AUTOTASK, source_id="9200")
+    card.contact_id = "ghlc-9200"
+    ghl.opportunities["ghlopp-9200"] = card
+    _service_mapping(global_session, autotask_id="9200", ghl_id="ghlopp-9200")
+    global_session.commit()
+
+    autotask.note_queue = [
+        {"id": 9201, "ticketID": "9200", "title": "[GHL note wn1]", "description": "from GHL"},
+    ]
+    summary = await poll_once(autotask=autotask, ghl=ghl)
+    assert summary["ticket_note"] == 0
+    assert ghl.notes == []  # not echoed back
+
+
+async def test_note_sweep_halts_on_failure_and_retries_without_double_post(global_session):
+    """A transient GHL failure must halt the sweep at that note (cursor not
+    advanced past it) and NOT re-post the earlier committed note (findings #1, #3)."""
+    autotask = FakeAutotask()
+    ghl = FakeGHL()
+    for tid, gid, cid in (("9300", "ghlopp-9300", "ghlc-9300"), ("9301", "ghlopp-9301", "ghlc-9301")):
+        card = CanonicalDeal(source_system=System.AUTOTASK, source_id=tid)
+        card.contact_id = cid
+        ghl.opportunities[gid] = card
+        _service_mapping(global_session, autotask_id=tid, ghl_id=gid)
+    global_session.commit()
+
+    ghl.fail_note_for_contacts = {"ghlc-9301"}  # note 9301 will fail
+    autotask.note_queue = [
+        {"id": 9300, "ticketID": "9300", "title": "ok", "description": "first"},
+        {"id": 9301, "ticketID": "9301", "title": "boom", "description": "second"},
+    ]
+
+    first = await poll_once(autotask=autotask, ghl=ghl)
+    assert first["ticket_note"] == 1  # only 9300 mirrored; sweep halted at 9301
+    assert [n[0] for n in ghl.notes] == ["ghlc-9300"]
+
+    # Recover: 9301 now succeeds. 9300 must NOT be posted again (durable mark).
+    ghl.fail_note_for_contacts = set()
+    second = await poll_once(autotask=autotask, ghl=ghl)
+    assert second["ticket_note"] == 1
+    assert sorted(n[0] for n in ghl.notes) == ["ghlc-9300", "ghlc-9301"]
 
 
 # ── Inbound GHL note routing (webhook path) ───────────────────────────────────

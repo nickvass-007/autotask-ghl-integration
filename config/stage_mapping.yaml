@@ -20,13 +20,13 @@ sales_pipeline:
   autotask_entity: opportunity
   # The closed-won stage IS the conversion/handoff signal (Spec §8.2) — Stage C.
   closed_won_stage_id: "REPLACE_WITH_GHL_CLOSED_WON_STAGE_ID"
-  # Optional: fire the conversion handoff (customer-onboarding approval) at
-  # EARLIER stages too — e.g. once a prospect is qualified, so the company/contact
-  # lands in the system of record before the deal closes. Omit (or leave empty)
-  # to keep the closed-won-only behaviour.
+  # Optional: ADD earlier stages that also fire the conversion handoff
+  # (customer-onboarding approval) — e.g. once a prospect is qualified, so the
+  # company/contact lands in the system of record before the deal closes.
+  # closed_won_stage_id is ALWAYS a trigger; these are additive, so you do NOT
+  # list closed-won here. Omit (or leave empty) for closed-won-only behaviour.
   # conversion_stage_ids:
   #   - "REPLACE_WITH_GHL_QUALIFIED_STAGE_ID"
-  #   - "REPLACE_WITH_GHL_CLOSED_WON_STAGE_ID"
   stages:
     - ghl_stage_id: "REPLACE_WITH_GHL_NEW_LEAD_STAGE_ID"
       autotask_status_value: "1"          # Autotask Opportunity stage picklist value

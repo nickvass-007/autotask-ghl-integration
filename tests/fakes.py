@@ -208,6 +208,7 @@ class FakeGHL:
     custom_fields: dict[str, dict] = field(default_factory=dict)
     businesses: dict[str, dict] = field(default_factory=dict)
     business_updates: list[tuple[str, dict]] = field(default_factory=list)
+    fail_note_for_contacts: set = field(default_factory=set)
     _next_id: int = 1
 
     async def authenticate(self) -> None:
@@ -268,6 +269,9 @@ class FakeGHL:
         return [{"body": b} for cid, b in self.notes if cid == str(contact_id)]
 
     async def create_contact_note(self, contact_id: str, body: str) -> PushResult:
+        # Test hook: simulate a transient GHL failure for specific contacts.
+        if str(contact_id) in self.fail_note_for_contacts:
+            raise RuntimeError("simulated GHL 500 on create_contact_note")
         self.notes.append((str(contact_id), body))
         return PushResult(ok=True, external_id=f"note{len(self.notes)}", detail="note_created")
 

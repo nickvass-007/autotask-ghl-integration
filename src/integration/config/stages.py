@@ -90,13 +90,14 @@ class StageMap:
 
     def is_conversion_trigger(self, ghl_pipeline_id: str, ghl_stage_id: str) -> bool:
         """True when reaching this stage should raise the Stage-C onboarding
-        approval (Spec §8.2). Configurable via ``conversion_stage_ids``; falls
-        back to the closed-won stage so existing configs keep their behaviour."""
+        approval (Spec §8.2). Closed-won is ALWAYS a trigger; ``conversion_stage_ids``
+        ADDS earlier stages on top (it never replaces closed-won — a deal that
+        jumps straight to won must still onboard)."""
         if ghl_pipeline_id != self.sales.ghl_pipeline_id:
             return False
-        triggers = self.sales.conversion_stage_ids or (
-            (self.sales.closed_won_stage_id,) if self.sales.closed_won_stage_id else ()
-        )
+        triggers = set(self.sales.conversion_stage_ids)
+        if self.sales.closed_won_stage_id:
+            triggers.add(self.sales.closed_won_stage_id)
         return ghl_stage_id in triggers
 
 

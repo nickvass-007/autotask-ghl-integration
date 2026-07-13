@@ -21,10 +21,13 @@ from __future__ import annotations
 import asyncio
 
 import httpx
+from sqlalchemy import event
+from sqlalchemy.orm import Session
 
 from ..config.settings import get_settings
 from ..core.logging import get_logger
 from ..db.models import ApprovalQueue
+from ..db.session import session_scope
 from .alerts import send_admin_alert
 from .cards import approval_card
 
@@ -125,27 +128,78 @@ async def post_approval_card(approval: ApprovalQueue) -> None:
         )
 
 
+def _text_card(text: str) -> dict:
+    """A minimal Adaptive Card carrying one line of text."""
+    return {
+        "type": "AdaptiveCard",
+        "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+        "version": "1.5",
+        "body": [{"type": "TextBlock", "text": text, "wrap": True}],
+    }
+
+
 async def post_feed_event(text: str) -> None:
-    """One line into the transaction-feed channel (Workflow transport)."""
+    """One line into the transaction-feed channel (Workflow transport).
+
+    Wrapped as an Adaptive Card attachment — the documented Teams Workflow flow
+    ("Post to a channel when a webhook request is received") renders
+    ``attachments[0].content``, so a bare ``{"text": ...}`` payload would be
+    silently dropped by the flow while _post_json still logged success."""
     s = get_settings()
     if not s.teams_workflow_webhook_url:
         return
-    await _post_json(s.teams_workflow_webhook_url, {"type": "message", "text": text})
+    await _post_json(s.teams_workflow_webhook_url, workflow_message(_text_card(text)))
 
 
 # ── Sync-context hooks (called from inside flows; must never raise) ───────────
-def announce_approval(approval: ApprovalQueue) -> None:
-    """Fire-and-forget notification for a freshly-raised approval."""
+def announce_approval(session: Session, approval: ApprovalQueue) -> None:
+    """Queue a freshly-raised approval for announcement AFTER the caller's
+    transaction commits.
+
+    Announcing inside the still-open transaction is unsafe: a later step in the
+    same flow (or the poller's per-item ``session.rollback()``) can roll the
+    approval INSERT back after the card/email has already gone out, leaving an
+    Approve/Reject card that points at an approval id which never persisted. So
+    the announcement is deferred to the session's ``after_commit`` event and
+    re-loads the row in a fresh session — if it was rolled back, it's simply
+    gone and nothing is posted."""
     try:
         s = get_settings()
         if not (s.teams_bot_app_id or s.teams_workflow_webhook_url or s.admin_email_list):
             return
-        # Detach the fields we need now — the DB session may close before the
-        # task runs, so the coroutine must not touch the ORM row lazily.
-        _ = (approval.id, approval.approval_type, approval.severity, approval.detected_reason)
-        _spawn(post_approval_card(approval))
+        pending = session.info.setdefault("pending_approval_announcements", [])
+        pending.append(approval.id)
+        if not session.info.get("_announce_hook"):
+            session.info["_announce_hook"] = True
+            # Listeners live for this Session instance only (session_scope makes a
+            # fresh one per scope), so one registration is enough. after_rollback
+            # clears the queue — anything before a rollback is gone with it.
+            event.listen(session, "after_commit", _flush_announcements)
+            event.listen(session, "after_rollback", _drop_announcements)
     except Exception:
         log.exception("announce_approval failed (notification only — sync unaffected)")
+
+
+def _flush_announcements(session: Session) -> None:
+    for approval_id in session.info.pop("pending_approval_announcements", None) or []:
+        _spawn(_announce_by_id(approval_id))
+
+
+def _drop_announcements(session: Session) -> None:
+    session.info.pop("pending_approval_announcements", None)
+
+
+async def _announce_by_id(approval_id: int) -> None:
+    from ..sync.approvals import get_approval  # lazy: avoids an import cycle
+
+    try:
+        with session_scope() as s:
+            approval = get_approval(s, approval_id)
+            if approval is None:
+                return  # rolled back or expired before we got here
+            await post_approval_card(approval)
+    except Exception:
+        log.exception("Deferred approval announcement failed (#%s)", approval_id)
 
 
 def announce_event(text: str) -> None:
