@@ -16,12 +16,20 @@ sub-account / location** and a Marketplace app scoped to least privilege (Spec �
 
 1. Go to the **GHL Marketplace developer portal**:
    <https://marketplace.gohighlevel.com/> → sign in → **My Apps → Create App**.
-2. **App details:** name (e.g. `Autotask Integration`), choose **Distribution: 
-   Sub-Account** (it installs per location).
-3. **Scopes** — request only what Stage 1 needs (least privilege ✅):
-   - `contacts.readonly`
-   - `contacts.write`
-   *(Opportunities scopes come in Stage 2.)*
+2. **App details:** name (e.g. `INTERLINKED Autotask Sync v2`), listing **Private**
+   (never listed on the public marketplace), **Distribution: Agency & Sub-Account**.
+   ⚠️ Distribution type is locked at creation — to change it you must create a new
+   app (which is why v2 exists). Agency & Sub-Account keeps the multi-sub-account
+   path open (each sub-account has its own Autotask instance).
+3. **Scopes** — everything the current flows call, plus Phase-3 scopes requested
+   up front so installed locations don't need re-authorization later:
+   - `contacts.readonly`, `contacts.write` (covers contact notes/tags/tasks endpoints)
+   - `businesses.readonly`, `businesses.write` (companies)
+   - `opportunities.readonly`, `opportunities.write` (deals + pipelines)
+   - `calendars.readonly`, `calendars/events.readonly`, `calendars/events.write`
+   - `locations.readonly`, `locations/customFields.readonly`, `locations/customFields.write`
+   - `locations/tags.readonly`, `locations/tags.write`
+   - `users.readonly`
 4. **Redirect URI:** add `http://localhost:8000/oauth/crm/callback` for local dev.
    (Add your deployed App Service callback URL later for production.)
    ⚠️ The path must not contain "ghl", "highlevel", or "leadconnector" — the
@@ -31,11 +39,13 @@ sub-account / location** and a Marketplace app scoped to least privilege (Spec �
 
 ## 3. Webhooks (signatures)
 
-1. In the app's **Webhooks** section, subscribe to **Contact Create** and **Contact
-   Update**.
-2. Set the webhook URL to your endpoint (`/webhooks/crm/contact` — brand-neutral
-   path, same restriction as the redirect URI). For local testing
-   use a tunnel (e.g. `ngrok http 8000`) and use the tunnel URL.
+1. In the app's **Webhooks** section, subscribe to **ContactCreate, ContactUpdate,
+   OpportunityCreate, OpportunityUpdate, OpportunityStageUpdate, NoteCreate**.
+2. Set the webhook URL to the unified dispatcher endpoint (`/webhooks/crm` —
+   brand-neutral path, same restriction as the redirect URI). A marketplace app
+   has ONE webhook URL for all event types; the dispatcher routes on the
+   payload's `type` field. For local testing use a tunnel (e.g. `ngrok http 8000`)
+   and use the tunnel URL.
 3. **There is no signing secret to copy.** GHL signs marketplace webhooks with
    *their* private key; the connector verifies the `x-ghl-signature` header
    (Ed25519) against GHL's published public key, which is baked into
@@ -53,7 +63,7 @@ GHL_CLIENT_SECRET=...
 GHL_LOCATION_ID=...
 GHL_WEBHOOK_SECRET=...
 GHL_REDIRECT_URI=http://localhost:8000/oauth/crm/callback
-GHL_SCOPES=contacts.readonly contacts.write
+GHL_SCOPES=contacts.readonly contacts.write businesses.readonly businesses.write opportunities.readonly opportunities.write calendars.readonly calendars/events.readonly calendars/events.write locations.readonly locations/customFields.readonly locations/customFields.write locations/tags.readonly locations/tags.write users.readonly
 ```
 
 ## 5. Authorise (one-time per environment)

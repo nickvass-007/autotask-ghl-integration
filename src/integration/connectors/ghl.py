@@ -474,13 +474,26 @@ class GHLConnector(Connector):
             if not wanted or (b.get("name") or "").strip().lower() == wanted
         ]
 
+    def business_fields(self, company) -> dict:
+        """GHL Business payload from a CanonicalCompany (create + mirror update)."""
+        address_parts = [getattr(company, "address1", None), getattr(company, "address2", None)]
+        address = ", ".join(p for p in address_parts if p) or None
+        fields = {
+            "name": company.name or "(unnamed)",
+            "website": getattr(company, "website", None),
+            "phone": getattr(company, "phone", None),
+            "address": address,
+            "city": getattr(company, "city", None),
+            "state": getattr(company, "state", None),
+            "postalCode": getattr(company, "postal_code", None),
+        }
+        return {k: v for k, v in fields.items() if v is not None}
+
     async def create_business(self, company) -> PushResult:
         payload = {
             "locationId": self._settings.ghl_location_id,
-            "name": company.name or "(unnamed)",
+            **self.business_fields(company),
         }
-        if getattr(company, "website", None):
-            payload["website"] = company.website
         resp = await request_json(
             self._client,  # type: ignore[arg-type]
             "POST",

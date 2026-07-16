@@ -47,6 +47,12 @@ def company_from_account_raw(raw: dict) -> CanonicalCompany:
         source_id=str(raw.get("id")),
         name=raw.get("companyName"),
         website=raw.get("webAddress"),
+        phone=raw.get("phone"),
+        address1=raw.get("address1"),
+        address2=raw.get("address2"),
+        city=raw.get("city"),
+        state=raw.get("state"),
+        postal_code=raw.get("postalCode"),
     )
     company.company_id = str(raw.get("id"))
     return company
@@ -68,7 +74,7 @@ async def mirror_autotask_account(
 
     link = company_mapping_by_autotask(session, account_id or "")
     if link and link.ghl_id:
-        await ghl.update_business(link.ghl_id, {"name": company.name, "website": company.website})
+        await ghl.update_business(link.ghl_id, ghl.business_fields(company))
         link.last_synced_at = utcnow()
         action, business_id = "updated", link.ghl_id
     else:

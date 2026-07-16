@@ -6,6 +6,8 @@ Endpoints (Stage 1):
   GET  /oauth/crm/callback     -> exchange code, store rotating refresh token
                                   (path is brand-neutral: GHL's marketplace rejects
                                   redirect URIs containing "ghl"/"highlevel")
+  POST /webhooks/crm           -> single marketplace-app webhook URL; dispatches by
+                                  payload "type" to the per-entity handlers below
   POST /webhooks/crm/contact   -> verify signature, run the gated Contacts flow (§9)
                                   (brand-neutral path, same reason as the OAuth callback)
   GET  /admin                  -> minimal ops web UI (approvals + transaction feed)
@@ -122,6 +124,43 @@ async def ghl_callback(code: str = "", state: str = "") -> JSONResponse:
     # ⚠️ In production persist the rotating refresh token to Key Vault, not memory.
     set_ghl_token(token)
     return JSONResponse({"status": "authorized", "environment": get_settings().environment.value})
+
+
+# ── GHL unified webhook dispatcher (Spec §4) ──────────────────────────────────
+# A marketplace app has ONE webhook URL for all subscribed event types; the
+# payload's "type" field says which event fired. Route to the per-entity
+# handlers (which re-verify the signature — Request.body() is cached, so the
+# delegate sees the identical bytes).
+_CONTACT_EVENTS = {"ContactCreate", "ContactUpdate"}
+_OPPORTUNITY_EVENTS = {
+    "OpportunityCreate",
+    "OpportunityUpdate",
+    "OpportunityStageUpdate",
+    "OpportunityStatusUpdate",
+    "OpportunityMonetaryValueUpdate",
+    "OpportunityAssignedToUpdate",
+}
+_NOTE_EVENTS = {"NoteCreate"}
+
+
+@app.post("/webhooks/crm")
+async def ghl_webhook_dispatcher(request: Request) -> JSONResponse:
+    body = await request.body()
+    ghl = get_ghl()
+    # Verify BEFORE routing so unknown-type probes can't fish for a 200 (Spec §4).
+    if not ghl.verify_webhook(dict(request.headers), body):
+        raise HTTPException(status_code=401, detail="invalid webhook signature")
+
+    payload = await request.json()
+    event_type = str(payload.get("type") or "")
+    if event_type in _CONTACT_EVENTS:
+        return await ghl_contact_webhook(request)
+    if event_type in _OPPORTUNITY_EVENTS:
+        return await ghl_opportunity_webhook(request)
+    if event_type in _NOTE_EVENTS:
+        return await ghl_note_webhook(request)
+    # Acknowledge verified-but-unhandled events so GHL doesn't retry them.
+    return JSONResponse({"action": "ignored", "detail": f"unhandled event type: {event_type or 'unknown'}"})
 
 
 # ── GHL inbound webhook -> gated Contacts flow (Spec §4, §9) ──────────────────

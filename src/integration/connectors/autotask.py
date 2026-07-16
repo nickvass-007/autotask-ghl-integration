@@ -66,6 +66,11 @@ class AutotaskConnector(Connector):
         self._base_url: str | None = None
         # A client can be injected for tests; otherwise created on authenticate().
         self._client = client
+        # Account id -> companyName cache. Autotask Contacts don't carry their
+        # parent company's NAME (only companyID), but GHL needs the text for the
+        # contact's companyName field. Cached so a poll sweep of many contacts
+        # sharing an Account resolves the name once.
+        self._account_name_cache: dict[str, str | None] = {}
 
     @property
     def system(self) -> System:
@@ -242,6 +247,12 @@ class AutotaskConnector(Connector):
             source_id=str(item.get("id")),
             name=item.get("companyName"),
             website=item.get("webAddress"),
+            phone=item.get("phone"),
+            address1=item.get("address1"),
+            address2=item.get("address2"),
+            city=item.get("city"),
+            state=item.get("state"),
+            postal_code=item.get("postalCode"),
         )
         company.company_id = str(item.get("id"))
         return company
@@ -285,6 +296,18 @@ class AutotaskConnector(Connector):
         )
         item = resp.json().get("item")
         return self._account_to_canonical(item) if item else None
+
+    async def get_account_name(self, account_id: str) -> str | None:
+        """Resolve (and cache) an Account's companyName for a given account id.
+        ⚠️ Read-only. Used to stamp the GHL contact's companyName text field."""
+        if not account_id:
+            return None
+        if account_id in self._account_name_cache:
+            return self._account_name_cache[account_id]
+        account = await self.get_account(account_id)
+        name = account.name if account else None
+        self._account_name_cache[account_id] = name
+        return name
 
     async def get_account_raw(self, account_id: str) -> dict | None:
         """Raw Account fields — classification sync reads picklist ids off this

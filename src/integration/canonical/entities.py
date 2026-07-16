@@ -36,6 +36,12 @@ class CanonicalCompany(CanonicalEntity):
 
     name: str | None = None
     website: str | None = None
+    phone: str | None = None
+    address1: str | None = None
+    address2: str | None = None
+    city: str | None = None
+    state: str | None = None
+    postal_code: str | None = None
     company_id: str | None = None  # resolved Autotask Account id (for linkage)
 
     def __post_init__(self) -> None:

@@ -134,6 +134,14 @@ class FakeAutotask:
     async def get_account_raw(self, account_id: str) -> dict | None:
         return self.accounts_raw.get(str(account_id))
 
+    async def get_account_name(self, account_id: str) -> str | None:
+        for a in self.accounts:
+            if str(getattr(a, "company_id", None)) == str(account_id) or str(
+                getattr(a, "source_id", None)
+            ) == str(account_id):
+                return a.name
+        return None
+
     async def get_picklist_values(self, entity: str, field_name: str) -> list[str]:
         return list(self.picklists.get((entity, field_name), {}).keys())
 
@@ -236,6 +244,20 @@ class FakeGHL:
             b for b in self.businesses.values()
             if not wanted or (b.get("name") or "").strip().lower() == wanted
         ]
+
+    def business_fields(self, company) -> dict:
+        address_parts = [getattr(company, "address1", None), getattr(company, "address2", None)]
+        address = ", ".join(p for p in address_parts if p) or None
+        fields = {
+            "name": company.name or "(unnamed)",
+            "website": getattr(company, "website", None),
+            "phone": getattr(company, "phone", None),
+            "address": address,
+            "city": getattr(company, "city", None),
+            "state": getattr(company, "state", None),
+            "postalCode": getattr(company, "postal_code", None),
+        }
+        return {k: v for k, v in fields.items() if v is not None}
 
     async def create_business(self, company) -> PushResult:
         self._next_id += 1

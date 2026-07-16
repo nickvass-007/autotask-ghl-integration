@@ -92,7 +92,9 @@ async def poll_once(*, autotask, ghl) -> dict:
                             continue  # inactive CONTACT — never mirrored outbound
                         if not await account_filter.allows_contact(entity):
                             continue  # outside the configured sync audience
-                        await push_autotask_contact(session, at_contact=entity, ghl=ghl)
+                        await push_autotask_contact(
+                            session, at_contact=entity, ghl=ghl, autotask=autotask
+                        )
                     elif entity_type is CanonicalEntityType.DEAL:
                         await mirror_autotask_opportunity(
                             session, deal=entity, ghl=ghl, stage_map=stage_map

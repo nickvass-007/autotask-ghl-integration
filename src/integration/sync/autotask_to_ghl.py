@@ -48,6 +48,7 @@ async def push_autotask_contact(
     *,
     at_contact: CanonicalContact,
     ghl,  # GHLConnector
+    autotask=None,  # AutotaskConnector — resolves the parent Account's name
     correlation_id: str | None = None,
 ) -> str:
     """Mirror an Autotask contact into GHL (overwrite). Returns the action taken."""
@@ -62,6 +63,12 @@ async def push_autotask_contact(
         company_link = company_mapping_by_autotask(session, at_contact.company_id)
         if company_link and company_link.ghl_id:
             at_contact.extra["ghl_business_id"] = company_link.ghl_id
+
+        # Autotask Contacts carry only companyID, not the company NAME. GHL shows
+        # companyName as the "Business name" column, so resolve it from the parent
+        # Account (cached) when the contact doesn't already have it.
+        if not at_contact.company_name and autotask is not None:
+            at_contact.company_name = await autotask.get_account_name(at_contact.company_id)
 
     if link and link.ghl_id:
         # Overwrite the GHL contact with authoritative Autotask values (Spec §5.1).
