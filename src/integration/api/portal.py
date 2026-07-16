@@ -11,15 +11,17 @@ import asyncio
 
 from fastapi import APIRouter, Header, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from ..config.settings import get_settings
 from ..core.logging import get_logger
 from ..db.base import utcnow
-from ..db.enums import ApprovalStatus, CanonicalEntityType
+from ..db.enums import ApprovalStatus, CanonicalEntityType, System, TransactionStatus
 from ..db.models import (
     ApprovalQueue,
     EntityMapping,
+    OAuthTokenStore,
+    SyncCursor,
     SyncJob,
     SyncProfile,
     TransactionLog,
@@ -206,6 +208,126 @@ async def overview(request: Request, x_admin_token: str = Header(default="")) ->
                 "recent_jobs": jobs,
             }
         )
+
+
+# ── System health ─────────────────────────────────────────────────────────────
+_HEALTH_ENTITY_TYPES = (
+    CanonicalEntityType.CONTACT,
+    CanonicalEntityType.COMPANY,
+    CanonicalEntityType.DEAL,
+    CanonicalEntityType.SERVICE_ITEM,
+)
+
+
+@router.get("/portal/api/health")
+async def system_health(request: Request, x_admin_token: str = Header(default="")) -> JSONResponse:
+    """Fast, DB-only snapshot of the integration's health — safe to poll.
+
+    No external API calls (use /health/ping for a live connectivity test)."""
+    _authorize(request, x_admin_token)
+    s = get_settings()
+    env = s.environment
+    with session_scope() as session:
+        mappings = {
+            et.value: session.query(EntityMapping)
+            .filter_by(environment=env, canonical_entity_type=et)
+            .count()
+            for et in _HEALTH_ENTITY_TYPES
+        }
+
+        tok = session.execute(
+            select(OAuthTokenStore).where(
+                OAuthTokenStore.environment == env, OAuthTokenStore.system == System.GHL
+            )
+        ).scalar_one_or_none()
+        ghl_authorized = tok is not None and bool(tok.access_token)
+        ghl_updated = _iso(tok.updated_at) if tok is not None else None
+
+        cursors = [
+            {
+                "entity_type": c.entity_type,
+                "source_system": _enum_val(c.source_system),
+                "cursor": c.cursor,
+                "updated_at": _iso(c.updated_at),
+            }
+            for c in session.execute(
+                select(SyncCursor).where(SyncCursor.environment == env)
+            ).scalars()
+        ]
+
+        # Errors in the last hour = a quick "is something wrong right now" signal.
+        from datetime import timedelta
+
+        errors_1h = session.execute(
+            select(func.count())
+            .select_from(TransactionLog)
+            .where(
+                TransactionLog.environment == env,
+                TransactionLog.timestamp >= utcnow() - timedelta(hours=1),
+                TransactionLog.status == TransactionStatus.ERROR,
+            )
+        ).scalar_one()
+
+    return JSONResponse(
+        {
+            "environment": env.value,
+            "is_production": s.is_production,
+            "connectors": {
+                "ghl": {
+                    "authorized": ghl_authorized,
+                    "token_updated_at": ghl_updated,
+                    "location_id": s.ghl_location_id or None,
+                    "scopes": s.ghl_scope_list,
+                },
+                "autotask": {
+                    "configured": bool(s.autotask_username),
+                    "zone": s.autotask_zone_override_url or "auto-detected",
+                },
+            },
+            "background": {
+                "poller_enabled": s.enable_poller,
+                "scheduler_enabled": s.enable_scheduler,
+                "poll_interval_s": s.autotask_poll_interval_seconds,
+                "reconciliation_interval_s": s.reconciliation_interval_seconds,
+            },
+            "mappings": mappings,
+            "cursors": cursors,
+            "errors_1h": errors_1h,
+        }
+    )
+
+
+@router.post("/portal/api/health/ping")
+async def system_health_ping(
+    request: Request, x_admin_token: str = Header(default="")
+) -> JSONResponse:
+    """On-demand LIVE connectivity test against Autotask and GHL (read-only)."""
+    _authorize(request, x_admin_token)
+
+    async def _ghl() -> dict:
+        try:
+            ghl = get_ghl()
+            await ghl.authenticate()
+            try:
+                pipelines = await ghl.get_pipelines()
+            except Exception:
+                # Access token may be stale — rotate once and retry (poller pattern).
+                await ghl.refresh()
+                pipelines = await ghl.get_pipelines()
+            return {"ok": True, "detail": f"{len(pipelines)} pipeline(s) reachable"}
+        except Exception as exc:
+            return {"ok": False, "detail": str(exc)[:200]}
+
+    async def _autotask() -> dict:
+        try:
+            at = await get_autotask()
+            ok = await at.health()
+            return {"ok": bool(ok), "detail": f"zone {at._base_url or 'unknown'}"}
+        except Exception as exc:
+            return {"ok": False, "detail": str(exc)[:200]}
+
+    ghl_res, at_res = await asyncio.gather(_ghl(), _autotask())
+    return JSONResponse({"ghl": ghl_res, "autotask": at_res})
 
 
 # ── Profiles ──────────────────────────────────────────────────────────────────

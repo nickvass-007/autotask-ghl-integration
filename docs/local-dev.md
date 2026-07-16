@@ -3,6 +3,31 @@
 Everything here runs against **sandbox / a GHL test location** — never production
 (Spec §6). The active environment is printed on startup and shown at `/health`.
 
+## Quick start (one command)
+
+Once `.env` exists (see step 3 below), you never need the manual steps again:
+
+- **Double-click `Start-Interlinked.bat`** in the project folder, **or** run `.\start.ps1`.
+
+It brings the whole stack up from a cold PC — starts Docker Desktop if it isn't
+running, starts Postgres, **repairs the `.venv` if OneDrive corrupted it**, applies
+migrations, opens the portal in your browser, then runs the API in that window.
+Leave the window open; press **Ctrl+C** to stop (or run `.\stop.ps1`).
+
+For a Desktop icon you can click after every restart, run once:
+
+```powershell
+.\Install-Shortcut.ps1     # creates "Interlinked Sync" on your Desktop
+```
+
+Launcher switches: `-Dev` (auto-reload on code changes), `-NoBrowser`,
+`-Rebuild` (force a clean dependency reinstall). Stop helpers: `.\stop.ps1` frees
+port 8000; `.\stop.ps1 -Db` also stops Postgres (data is kept).
+
+> The rest of this document is the **manual** setup — useful the first time, or for
+> understanding what the launcher automates. After first-time setup, use the
+> Quick start above.
+
 ## Prerequisites
 
 - **Python 3.12+** (the project targets 3.12). Check: `python --version`.

@@ -168,6 +168,10 @@ async function pageDashboard(){const d=await api("/portal/api/overview");const c
   <div class="row" style="margin-top:8px"><span class="muted">Human decisions:</span>
     ${pill("approved")} <b>${ad.approved??0}</b> <span class="muted">·</span>
     ${pill("failed")} <b>${ad.rejected??0}</b> rejected</div></div>
+  <div class="card"><div class="row" style="justify-content:space-between">
+    <h2>System health</h2>
+    <button class="btn" id="pingbtn" onclick="pingConnections()">Test connections</button></div>
+    <div id="health" class="muted">loading…</div></div>
   <div class="card"><h2>14-day activity</h2><div id="trend" class="muted">loading…</div></div>
   <div class="card"><h2>Recent jobs</h2><div class="scroll"><table>
     <tr><th>#</th><th>Profile</th><th>Kind</th><th>Trigger</th><th>Status</th><th>Started</th><th>Duration</th><th>Result</th></tr>
@@ -176,7 +180,46 @@ async function pageDashboard(){const d=await api("/portal/api/overview");const c
       <td>${pill(j.status)}</td><td>${fmtDt(j.started_at)}</td><td>${j.duration_s??"—"}s</td>
       <td class="muted">${esc(JSON.stringify(j.summary||{}).slice(0,80))}</td></tr>`).join("")}
   </table></div></div>`;
-  renderTrend();}
+  renderHealth();renderTrend();}
+
+async function renderHealth(){try{
+  const h=await api("/portal/api/health");const m=h.mappings||{},bg=h.background||{},cn=h.connectors||{};
+  const dot=ok=>`<span style="color:${ok?'var(--brand-success)':'var(--brand-danger)'}">●</span>`;
+  const onoff=v=>v?pill("enabled"):pill("disabled");
+  const cursorRows=(h.cursors||[]).map(c=>`<tr><td>${esc(c.entity_type)}</td><td class="muted">${esc(c.source_system||"—")}</td>
+    <td class="muted">${esc(c.cursor||"—")}</td><td>${fmtDt(c.updated_at)}</td></tr>`).join("")
+    ||`<tr><td colspan=4 class=muted>No polling cursors yet — the poller hasn't swept.</td></tr>`;
+  $("#health").innerHTML=`
+    <div class="grid" style="margin-bottom:10px">
+      <div class="stat"><b>${m.contact??0}</b>Contacts mapped</div>
+      <div class="stat"><b>${m.company??0}</b>Companies mapped</div>
+      <div class="stat"><b>${m.deal??0}</b>Deals mapped</div>
+      <div class="stat"><b>${m.service_item??0}</b>Tickets mapped</div>
+      <div class="stat"><b>${h.errors_1h??0}</b>Errors (last hour)</div>
+    </div>
+    <div class="row" style="gap:18px;flex-wrap:wrap">
+      <span>${dot(cn.ghl&&cn.ghl.authorized)} <b>GoHighLevel</b> ${cn.ghl&&cn.ghl.authorized?"authorised":"not authorised"}
+        <span class="muted">${cn.ghl&&cn.ghl.scopes?`· ${cn.ghl.scopes.length} scopes`:""}</span></span>
+      <span>${dot(cn.autotask&&cn.autotask.configured)} <b>Autotask</b> ${cn.autotask&&cn.autotask.configured?"configured":"not configured"}
+        <span class="muted">${cn.autotask?`· ${esc(cn.autotask.zone)}`:""}</span></span>
+    </div>
+    <div class="row" style="gap:18px;margin-top:8px;flex-wrap:wrap">
+      <span>Poller ${onoff(bg.poller_enabled)} <span class="muted">every ${bg.poll_interval_s}s</span></span>
+      <span>Scheduler ${onoff(bg.scheduler_enabled)}</span>
+      <span class="muted">Reconciliation every ${bg.reconciliation_interval_s}s</span>
+    </div>
+    <div id="pingresult" style="margin-top:8px"></div>
+    <h3>Polling cursors</h3><div class="scroll"><table>
+      <tr><th>Entity</th><th>Source</th><th>Cursor</th><th>Updated</th></tr>${cursorRows}</table></div>`;
+}catch(e){$("#health").textContent="health unavailable: "+e.message;}}
+
+async function pingConnections(){const btn=$("#pingbtn");const out=$("#pingresult");
+  btn.disabled=true;btn.textContent="Testing…";out.innerHTML="";
+  try{const r=await api("/portal/api/health/ping",{method:"POST"});
+    const line=(name,x)=>`<div>${x.ok?pill("ok"):pill("failed")} <b>${name}</b> <span class="muted">${esc(x.detail||"")}</span></div>`;
+    out.innerHTML=line("GoHighLevel",r.ghl)+line("Autotask",r.autotask);
+  }catch(e){out.innerHTML=`<span class="pill failed">error</span> ${esc(e.message)}`;}
+  finally{btn.disabled=false;btn.textContent="Test connections";}}
 
 async function renderTrend(){try{
   const t=await api("/portal/api/trends");const days=t.days;
